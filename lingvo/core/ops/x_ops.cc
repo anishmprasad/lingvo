@@ -16,7 +16,7 @@ limitations under the License.
 #include "tensorflow/core/framework/common_shape_fns.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/shape_inference.h"
-#include "lingvo/core/ops/x_ops_helper.h"
+#include "x_ops_helper.h"
 
 namespace tensorflow {
 namespace {
@@ -84,7 +84,8 @@ REGISTER_OP("BestStep")
 
 Determines the best global step from a history file.
 
-best_step: Scalar value for best global step.
+best_step: Shape [2]. best_step[0] is scalar value for best global step.
+  best_step[1] is scalar value for last global step.
 hist_file: A text file containing 'step score' records, or a file pattern that
     matches tf event files in the format of /path_to_file/events.out.tfevents*.
 tol: Difference between previous best score and current score must be greater
@@ -119,6 +120,7 @@ REGISTER_OP("BeamSearchStep")
     .Attr("beam_size: float")
     .Attr("num_hyps_per_beam: int")
     .Attr("valid_eos_max_logit_delta: float = 5.0")
+    .Attr("local_eos_threshold: float = -100.0")
     .Attr("merge_paths: bool = false")
     .Attr("allow_empty_terminated_hyp: bool = true")
     .Attr("ensure_full_beam: bool = false")
@@ -210,6 +212,8 @@ num_hyps_per_beam: Number of hyps in a beam.
 valid_eos_max_logit_delta: We allow </s> to terminate a hyp only if its logit
     is no more than `valid_eos_max_logit_delta` away from the logit of the best
     candidate.
+local_eos_threshold: We allow </s> to terminate a hyp if the local score for
+    </s> is greater than local_eos_threshold.
 merge_paths: If true, hyps which are identical when epsilons are removed will
     be combined into a single hyp.  The probability for that combined hyp will
     be the sum of the probabilities of the component hyps.  This can only be
@@ -598,8 +602,6 @@ sequences: The string sequences. The shape is [batch_size].
 vocab_filepath: A path to a text file where each line is a BPE string token.
 )doc");
 
-
-
 REGISTER_OP("GenericInput")
     .Output("out: out_types")
     .INPUT_ATTRS  // Common input attributes.
@@ -625,9 +627,51 @@ processor: A function that processes a string (one record) and returns
 dynamic_padding_dimensions: If not empty, must be the same length as out.
     Specifies the 0-indexed dimension to pad dynamically for each output.
     The output is padded to the longest tensor in the batch along the dimension.
-    The first (0-th) dimension is _not_ the batch dimension.
+    The first (0-th) dimension is _not_ the batch dimension. A value of -1
+    indicates the specified output should not be padded, eg. if the output is a
+    scalar rather than a sequence.
 dynamic_padding_constants: Must be set if `dynamic_padding_dimension` is
     provided. The constant value to use for padding.
+)doc");
+
+REGISTER_OP("StaticMapStringInt")
+    .Input("x: string")
+    .Output("y: int32")
+    .Attr("keys: list(string)")
+    .Attr("vals: list(int) = []")
+    .Attr("unk: int = -1")
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
+      c->set_output(0, c->input(0));
+      return ::tensorflow::Status::OK();
+    })
+    .Doc(R"doc(
+Maps every element of x according a static mapping.
+
+x: A Tensor of type string.
+y: A Tensor of type int32. Same shape of x.
+keys: The list of keys.
+vals: The list of values. If empty, defaults to [0 .. len(keys)).
+unk: The value when the key is not found.
+)doc");
+
+REGISTER_OP("StaticMapIntString")
+    .Input("x: int32")
+    .Output("y: string")
+    .Attr("keys: list(int) = []")
+    .Attr("vals: list(string)")
+    .Attr("unk: string = ''")
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
+      c->set_output(0, c->input(0));
+      return ::tensorflow::Status::OK();
+    })
+    .Doc(R"doc(
+Maps every element of x according a static mapping.
+
+x: A Tensor of type int32.
+y: A Tensor of type string. Same shape of x.
+keys: The list of keys. If empty, defaults to [0 .. len(keys)).
+vals: The list of values.
+unk: The value when the key is not found.
 )doc");
 
 }  // namespace

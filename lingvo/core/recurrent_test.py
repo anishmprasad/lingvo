@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # -*- coding: utf-8 -*-
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
@@ -19,15 +20,17 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import lingvo.compat as tf
+from lingvo.core import base_layer
+from lingvo.core import py_utils
+from lingvo.core import recurrent
+from lingvo.core import symbolic
+from lingvo.core import test_utils
 import numpy as np
 from six.moves import range
 from six.moves import zip
-import tensorflow as tf
 
 from tensorflow.python.framework import function
-from lingvo.core import py_utils
-from lingvo.core import recurrent
-from lingvo.core import test_utils
 
 
 def _ApplyPadding(padding, v_no_pad, v_pad):
@@ -75,7 +78,25 @@ def _Poly(theta, state, inputs):
   return next_state, py_utils.NestedMap()
 
 
-class RecurrentTest(tf.test.TestCase):
+class _IncrementAccumulator(base_layer.Accumulator):
+
+  def DefaultValue(self):
+    return tf.convert_to_tensor(0.0)
+
+  def Update(self, increment_by):
+    initial = self.GetValue()
+    self.SetValue(initial + tf.convert_to_tensor(increment_by))
+
+
+class _SampleAccumulatorLayer(base_layer.BaseLayer):
+
+  def __init__(self, params):
+    super(_SampleAccumulatorLayer, self).__init__(params)
+    self.accumulator_name = 'sample_accumulator'
+    self.RegisterAccumulator(self.accumulator_name, _IncrementAccumulator())
+
+
+class RecurrentTest(test_utils.TestCase):
 
   def testBasic(self):
 
@@ -116,6 +137,69 @@ class RecurrentTest(tf.test.TestCase):
       # 4 + 6*x
       self.assertAllClose(dx_val, 16.)
       self.assertAllClose(d_coeff_val, [3., 4., 4.])
+
+  def testBasicWithAccumulator(self):
+
+    with self.session() as sess:
+
+      p = _SampleAccumulatorLayer.Params()
+      p.name = 'sample'
+      accum_layer = _SampleAccumulatorLayer(p)
+      accum_obj = accum_layer.accumulators[accum_layer.accumulator_name]
+
+      theta = py_utils.NestedMap()
+      theta.x = tf.constant(2.0)
+      state = py_utils.NestedMap()
+      state.value = tf.constant(0.0)
+      state.x_power = tf.constant(1.0)
+      inputs = py_utils.NestedMap()
+      inputs.coeff = tf.constant([1., 2., 3.])
+
+      def _CellFn(theta, state, inputs):
+        print('TEST ACCUM WITHIN CellFn = ', accum_obj.GetValue())
+        accum_obj.Update(inputs.coeff)
+        return _Poly(theta, state, inputs)
+
+      # By doing one accumulate prior to recurrent, we ensure that incoming
+      # recurrent state is preserved.
+      accum_obj.Update(10.)
+
+      # x = 2
+      # 1 + 2*x + 3*x^2
+      ret = recurrent.Recurrent(
+          theta, state, inputs, _CellFn, accumulator_layer=accum_layer)
+
+      # Verify bprop.
+      y = ret[1].value
+      dx, d_coeff = tf.gradients(ys=[y], xs=[theta.x, inputs.coeff])
+      dx_val, d_coeff_val = sess.run([dx, d_coeff])
+
+      # 2 + 6*x
+      self.assertAllClose(dx_val, 14.)
+      self.assertAllClose(d_coeff_val, [1., 2., 4.])
+
+      # acc = [1, 1+2x, 1+2x+3x^2]
+      # sum(acc) = 3 + 4x + 3x^2
+      acc = ret[0].value
+      dx, d_coeff = tf.gradients(
+          ys=[tf.reduce_sum(acc)], xs=[theta.x, inputs.coeff])
+      dx_val, d_coeff_val = sess.run([dx, d_coeff])
+      # 4 + 6*x
+      self.assertAllClose(dx_val, 16.)
+      self.assertAllClose(d_coeff_val, [3., 4., 4.])
+
+      # Verify fprop.
+      (acc, state), accum_obj_value = sess.run((ret, accum_obj.GetValue()))
+
+      # Verify that accumulators don't change fprop results.
+      self.assertAllClose(acc.value, [1., 5., 17.])
+      self.assertAllClose(acc.x_power, [2., 4., 8.])
+      self.assertAllClose(state.value, 17.)
+      self.assertAllClose(state.x_power, 8.)
+
+      # Verify accumulator (should be 10 (initial increment) + 1 + 2 + 3).
+      self.assertEqual(0, accum_obj._disable_count)
+      self.assertAllClose([accum_obj_value], [16.0])
 
   def testTimeBasedStopFn(self):
 
@@ -331,6 +415,61 @@ class RecurrentTest(tf.test.TestCase):
         unused_real_acc, unused_real_staten = recurrent.Recurrent(
             theta, state0, inputs, CellFn, allow_implicit_capture=False)
 
+  def testSymbolToTensorMap(self):
+    """Tests that cell_fn can rely on the contextual symbol-to-tensor map."""
+
+    x = symbolic.Symbol('x')
+
+    def PlusWXT(theta, state, inputs):
+      """state.value += theta.w * x * inputs.t."""
+      next_state = py_utils.NestedMap()
+      x_tensor = symbolic.EvalExpr(symbolic.TENSOR_VALUES, x)
+      next_state.value = state.value + theta.w * x_tensor * inputs.t
+      return next_state, py_utils.NestedMap()
+
+    def PlusWXTGrad(theta, state0, inputs, extras, dstate1):
+      """Gradient function for PlusWXT."""
+      del state0, extras
+      x_tensor = symbolic.EvalExpr(symbolic.TENSOR_VALUES, x)
+      dtheta = py_utils.NestedMap(w=dstate1.value * x_tensor * inputs.t)
+      dstate0 = py_utils.NestedMap(value=dstate1.value)
+      dinputs = py_utils.NestedMap(t=dstate1.value * theta.w * x_tensor)
+      return dtheta, dstate0, dinputs, None
+
+    with self.session() as sess:
+      theta = py_utils.NestedMap(w=tf.constant(1., name='w'))
+      state0 = py_utils.NestedMap(value=tf.constant(0., name='value'))
+      inputs = py_utils.NestedMap(t=tf.constant([1., 2., 3.], name='t'))
+
+      # With automatic cell_grad.
+      with symbolic.SymbolToValueMap(symbolic.TENSOR_VALUES,
+                                     {x: tf.constant(7., name='x7')}):
+        x_tensor = symbolic.EvalExpr(symbolic.TENSOR_VALUES, x)
+        _, state1 = recurrent.Recurrent(theta, state0, inputs, PlusWXT)
+        dw = tf.gradients(ys=[state1.value], xs=[theta.w])[0]
+        dx = tf.gradients(ys=[state1.value], xs=[x_tensor])[0]
+        final_value, x_val, dx_val, dw_val = sess.run(
+            [state1.value, x_tensor, dx, dw])
+      self.assertEqual(x_val, 7)
+      self.assertEqual(final_value, x_val * (1. + 2. + 3.))
+      self.assertEqual(dw_val, x_val * (1. + 2. + 3.))
+      self.assertEqual(dx_val, (1. + 2. + 3.))
+
+      # With manual cell_grad.
+      with symbolic.SymbolToValueMap(symbolic.TENSOR_VALUES,
+                                     {x: tf.constant(5., name='x5')}):
+        x_tensor = symbolic.EvalExpr(symbolic.TENSOR_VALUES, x)
+        _, state1 = recurrent.Recurrent(
+            theta, state0, inputs, PlusWXT, cell_grad=PlusWXTGrad)
+        dw = tf.gradients(ys=[state1.value], xs=[theta.w])[0]
+        dx = tf.gradients(ys=[state1.value], xs=[x_tensor])[0]
+        final_value, x_val, dx_val, dw_val = sess.run(
+            [state1.value, x_tensor, dx, dw])
+      self.assertEqual(x_val, 5)
+      self.assertEqual(final_value, x_val * (1. + 2. + 3.))
+      self.assertEqual(dw_val, x_val * (1. + 2. + 3.))
+      self.assertEqual(dx_val, (1. + 2. + 3.))
+
   def testStatefulCellFn(self):
 
     def Rand(theta, state, inputs):
@@ -527,6 +666,25 @@ class RecurrentTest(tf.test.TestCase):
     self._testElmanHelper(7, False, StopFn)
     self._testElmanHelper(7, True, StopFn)
 
+  def testSetShape(self):
+    dst = py_utils.NestedMap(
+        a=tf.placeholder(tf.int32, shape=None),
+        b=py_utils.NestedMap(
+            b1=tf.placeholder(tf.int32, shape=None),
+            b2=tf.placeholder(tf.int32, shape=None)))
+    src = py_utils.NestedMap(
+        a=tf.constant(0, shape=[2, 4], dtype=tf.int32),
+        b=py_utils.NestedMap(
+            b1=tf.constant(0, shape=[1, 3], dtype=tf.int32),
+            b2=tf.constant(0, shape=[5, 8], dtype=tf.int32)))
+    recurrent._SetShapes(dst, src)
+    self.assertAllClose(
+        [2, 4],
+        py_utils.GetShape(dst.a, 2),
+    )
+    self.assertAllClose([1, 3], py_utils.GetShape(dst.b.b1, 2))
+    self.assertAllClose([5, 8], py_utils.GetShape(dst.b.b2, 2))
+
 
 class StackedRecurrentTest(RecurrentTest):
 
@@ -628,7 +786,7 @@ class StackedRecurrentTest(RecurrentTest):
       o *= (1 - inputs.padding)
     loss = tf.reduce_sum(tf.square(o))
 
-    xs = recurrent._Flatten(thetas + [py_utils.NestedMap(x=inputs.x)])
+    xs = recurrent.Flatten(thetas + [py_utils.NestedMap(x=inputs.x)])
     dxs = tf.gradients(ys=loss, xs=xs)
 
     # Reference implementation using Recurrent().

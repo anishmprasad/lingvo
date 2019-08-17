@@ -69,8 +69,11 @@ intersphinx_mapping = {
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
 
+
+
 # The suffix(es) of source filenames.
 # You can specify multiple suffix as a list of string:
+from docutils.transforms import Transform
 from recommonmark.parser import CommonMarkParser
 source_parsers = {
     '.md': CommonMarkParser,
@@ -199,9 +202,6 @@ epub_exclude_files = ['search.html']
 todo_include_todos = True
 
 
-from docutils.transforms import Transform
-
-
 class ResetFlags(Transform):
 
   default_priority = 999
@@ -209,7 +209,8 @@ class ResetFlags(Transform):
   def apply(self):
     import tensorflow as tf
     for flag in list(tf.flags.FLAGS):
-      delattr(tf.flags.FLAGS, flag)
+      if flag not in ('showprefixforinfo',):
+        delattr(tf.flags.FLAGS, flag)
 
 
 def setup(app):

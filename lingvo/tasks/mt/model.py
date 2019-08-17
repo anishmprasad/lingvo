@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,17 +19,16 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from six.moves import zip
-import tensorflow as tf
-
+import lingvo.compat as tf
 from lingvo.core import base_layer
 from lingvo.core import base_model
-from lingvo.core import cluster_factory
+from lingvo.core import insertion
 from lingvo.core import metrics
 from lingvo.core import py_utils
-from lingvo.core import summary_utils
 from lingvo.tasks.mt import decoder
 from lingvo.tasks.mt import encoder
+from six.moves import range
+from six.moves import zip
 
 
 class MTBaseModel(base_model.BaseTask):
@@ -55,15 +55,33 @@ class MTBaseModel(base_model.BaseTask):
 
     with tf.variable_scope(p.name):
       with self._EncoderDevice():
-        self.CreateChild('enc', p.encoder)
+        if p.encoder:
+          self.CreateChild('enc', p.encoder)
       with self._DecoderDevice():
         self.CreateChild('dec', p.decoder)
 
+  @classmethod
+  def UpdateTargetVocabSize(cls, p, vocab_size, wpm_model=None):
+    """Updates the params with the input vocab_size and wpm model."""
+    p.decoder = p.decoder.cls.UpdateTargetVocabSize(p.decoder, vocab_size,
+                                                    wpm_model)
+    return p
+
   def ComputePredictions(self, theta, batch):
+    p = self.params
+
     with self._EncoderDevice():
-      encoder_outputs = self.enc.FProp(theta.enc, batch.src)
+      encoder_outputs = (
+          self.enc.FProp(theta.enc, batch.src) if p.encoder else None)
     with self._DecoderDevice():
-      return self.dec.ComputePredictions(theta.dec, encoder_outputs, batch.tgt)
+      predictions = self.dec.ComputePredictions(theta.dec, encoder_outputs,
+                                                batch.tgt)
+      if isinstance(predictions, py_utils.NestedMap):
+        # Pass through encoder output as well for possible use as a FProp output
+        # for various meta-MT modeling approaches, such as MT quality estimation
+        # classification.
+        predictions['encoder_outputs'] = encoder_outputs
+      return predictions
 
   def ComputeLoss(self, theta, batch, predictions):
     with self._DecoderDevice():
@@ -182,25 +200,6 @@ class TransformerModel(MTBaseModel):
     p = self.params
     assert p.encoder.model_dim == p.decoder.source_dim
 
-  def BProp(self):
-    super(TransformerModel, self).BProp()
-    # Computes gradients' norm and adds their summaries.
-    p = self.params
-    vg = self._var_grads
-    emb_vg = py_utils.NestedMap()
-    emb_vg.child = [vg.enc.token_emb, vg.dec.token_emb]
-
-    # Note that positional embedding layer has no trainable variable
-    # if its trainable_scaling is false.
-    if 'position_emb' in vg.enc:
-      emb_vg.child += [vg.enc.position_emb]
-    if 'position_emb' in vg.dec:
-      emb_vg.child += [vg.dec.position_emb]
-    summary_utils.AddNormSummary('emb', emb_vg)
-    summary_utils.AddNormSummary('atten',
-                                 [vg.enc.transformer_stack.trans, vg.dec.trans])
-    summary_utils.AddNormSummary('softmax', vg.dec.softmax)
-
 
 class RNMTModel(MTBaseModel):
   """RNMT+ Model.
@@ -216,35 +215,179 @@ class RNMTModel(MTBaseModel):
     p.decoder = decoder.MTDecoderV1.Params()
     return p
 
-  def BProp(self):
-    super(RNMTModel, self).BProp()
 
+class InsertionModel(MTBaseModel):
+  """Insertion-based model.
+
+  References:
+    KERMIT: https://arxiv.org/pdf/1906.01604.pdf
+    Insertion Transformer: https://arxiv.org/pdf/1902.03249.pdf
+  """
+
+  @classmethod
+  def Params(cls):
+    p = super(InsertionModel, cls).Params()
+    p.decoder = decoder.InsertionDecoder.Params()
+    p.Define('insertion', insertion.SymbolInsertionLayer.Params(),
+             'Insertion specifications (i.e., rollin and oracle policy).')
+    return p
+
+  @base_layer.initializer
+  def __init__(self, params):
+    super(InsertionModel, self).__init__(params)
     p = self.params
-    if p.add_summary:
-      vg = self._var_grads
-      # Computes gradients' norm and adds their summaries.
-      emb_grads = []
-      rnn_grads = []
-      atten_grads = []
-      softmax_grads = []
-      if 'enc' in vg:
-        emb_grads += [vg.enc.emb] if 'emb' in vg.enc else []
-        rnn_grads += [vg.enc.rnn] if 'rnn' in vg.enc else []
-      if 'dec' in vg:
-        emb_grads += [vg.dec.emb] if 'emb' in vg.dec else []
-        rnn_grads += [vg.dec.frnn] if 'frnn' in vg.dec else []
-        softmax_grads += [vg.dec.softmax] if 'softmax' in vg.dec else []
-        if 'frnn_with_atten' in vg.dec:
-          if 'cell' in vg.dec.frnn_with_atten:
-            rnn_grads += [vg.dec.frnn_with_atten.cell]
-          if 'atten' in vg.dec.frnn_with_atten:
-            atten_grads += [vg.dec.frnn_with_atten.atten]
 
-      if emb_grads:
-        summary_utils.AddNormSummary('emb', emb_grads)
-      if rnn_grads:
-        summary_utils.AddNormSummary('lstm', rnn_grads)
-      if atten_grads:
-        summary_utils.AddNormSummary('atten', atten_grads)
-      if softmax_grads:
-        summary_utils.AddNormSummary('softmax', softmax_grads)
+    with tf.variable_scope(p.name):
+      self.CreateChild('insertion', p.insertion)
+
+  def _SampleCanvasAndTargets(self, x, x_paddings):
+    """Sample a canvas and its corresponding targets.
+
+    Args:
+      x: A Tensor representing the canvas.
+      x_paddings: A Tensor representing the canvas paddings.
+
+    Returns:
+      A `NestedMap` capturing the new sampled canvas and its targets.
+    """
+    p = self.params
+
+    # TODO(williamchan): Consider grabbing `eos_id` from `x` instead of `p`.
+    eos_id = p.decoder.target_eos_id
+
+    # Sample a canvas (and it's corresponding targets).
+    return self.insertion.FProp(None, x, x_paddings, eos_id, True)
+
+  def _CreateCanvasAndTargets(self, batch):
+    # pyformat: disable
+    """Create the canvas and targets.
+
+    Args:
+      batch: A `.NestedMap`.
+
+        - src: A `.NestedMap`.
+          - ids: The source ids, ends in <eos>.
+          - paddings: The source paddings.
+
+        - tgt: A `.NestedMap`.
+          - ids: The target ids, ends in <eos>.
+          - paddings: The target paddings.
+
+    Returns:
+      A `NestedMap`.
+        - canvas: The canvas (based off of the `rollin_policy`) of shape
+          [batch_size, c_dim].
+        - canvas_paddings: The paddings of `canvas_indices`.
+        - target_indices: The target indices (i.e., use these indices to
+          tf.gather_nd the log-probs). Optional, only during training.
+        - target_weights: The target weights. Optional, only during training.
+    """
+    # pyformat: enable
+    p = self.params
+
+    if not p.is_eval:
+      # Sample our src and tgt canvas.
+      src_descriptor = self._SampleCanvasAndTargets(batch.src.ids,
+                                                    batch.src.paddings)
+      tgt_descriptor = self._SampleCanvasAndTargets(batch.tgt.ids,
+                                                    batch.tgt.paddings)
+
+      # Offset the src ids (to unshare embeddings between src/tgt). Note, we
+      # only offset the canvas ids, but we do not offset the vocab ids. This
+      # will result in unshared embeddings, but shared softmax. This is due to
+      # GPU/TPU memory limitations, empirically it is known that unsharing
+      # everything results in better performance.
+      vocab_size = p.decoder.softmax.num_classes
+      src_descriptor.canvas = tf.where(
+          tf.equal(src_descriptor.canvas_paddings, 0),
+          src_descriptor.canvas + vocab_size, src_descriptor.canvas)
+
+      # Offset the tgt indices (need shift according to src length).
+      batch_size = py_utils.GetShape(batch.src.ids)[0]
+      # `target_batch` is a [num_targets, batch_size] tensor where each row
+      # identifies which batch the target belongs to. Note the observation that,
+      # tf.reduce_sum(target_batch, 1) == 1 \forall rows.
+      target_batch = tf.cast(
+          tf.equal(
+              tf.expand_dims(tf.range(batch_size), 0),
+              tf.expand_dims(tgt_descriptor.target_indices[:, 0], 1)), tf.int32)
+      src_lens = tf.cast(
+          tf.reduce_sum(1 - src_descriptor.canvas_paddings, 1), tf.int32)
+      # `tgt_offset` is shape [num_targets] where each entry corresponds to the
+      # offset needed for that target (due to the source length).
+      tgt_offset = tf.matmul(target_batch, tf.expand_dims(src_lens, 1))
+      # We shift the tgt slot without touching the batch or vocab.
+      tgt_descriptor.target_indices += tf.concat(
+          [tf.zeros_like(tgt_offset), tgt_offset,
+           tf.zeros_like(tgt_offset)], 1)
+
+      # The canvas is simply the sequence-level concat of the src and tgt.
+      canvas, canvas_paddings = insertion.SequenceConcat(
+          src_descriptor.canvas, src_descriptor.canvas_paddings,
+          tgt_descriptor.canvas, tgt_descriptor.canvas_paddings)
+      target_indices = tf.concat(
+          [src_descriptor.target_indices, tgt_descriptor.target_indices], 0)
+      target_weights = tf.concat(
+          [src_descriptor.target_weights, tgt_descriptor.target_weights], 0)
+
+      return py_utils.NestedMap(
+          canvas=canvas,
+          canvas_paddings=canvas_paddings,
+          target_indices=target_indices,
+          target_weights=target_weights)
+
+  def ComputePredictions(self, theta, batch):
+    # pyformat: disable
+    """Compute the model predictions.
+
+    Args:
+      theta: A `.NestedMap` object containing weights' values of this layer and
+        its children layers.
+      batch: A `.NestedMap`.
+
+        - src: A `.NestedMap`.
+          - ids: The source ids, ends in <eos>.
+          - paddings: The source paddings.
+
+        - tgt: A `.NestedMap`.
+          - ids: The target ids, ends in <eos>.
+          - paddings: The target paddings.
+
+    Returns:
+      A `.NestedMap`.
+        - outputs: The contextualized output vectors of shape
+          [batch_size, time_dim, model_dim].
+        - tgt: A `.NestedMap` (optional, only during training).
+          - ids: The canvas ids.
+          - paddings: The canvas paddings.
+          - target_indices: The target indices.
+          - target_weights: The target weights.
+    """
+    # pyformat: enable
+    p = self.params
+
+    # TODO(williamchan): Currently, we only support KERMIT mode (i.e., no
+    # encoder, unified architecture).
+    assert not p.encoder
+
+    # Sometimes src and tgt have different types. We reconcile here and use
+    # int32.
+    batch.src.ids = tf.cast(batch.src.ids, tf.int32)
+    batch.tgt.ids = tf.cast(batch.tgt.ids, tf.int32)
+
+    canvas_and_targets = self._CreateCanvasAndTargets(batch)
+    batch = py_utils.NestedMap(
+        tgt=py_utils.NestedMap(
+            ids=canvas_and_targets.canvas,
+            paddings=canvas_and_targets.canvas_paddings))
+
+    predictions = super(InsertionModel, self).ComputePredictions(theta, batch)
+
+    if not p.is_eval:
+      predictions.tgt = py_utils.NestedMap(
+          ids=canvas_and_targets.canvas,
+          paddings=canvas_and_targets.canvas_paddings,
+          target_indices=canvas_and_targets.target_indices,
+          target_weights=canvas_and_targets.target_weights)
+
+    return predictions

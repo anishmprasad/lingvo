@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,26 +18,19 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import numpy as np
-import tensorflow as tf
-
-from tensorflow.contrib.cudnn_rnn.python.ops import cudnn_rnn_ops
-from tensorflow.python.ops import gen_cudnn_rnn_ops
-
-from lingvo.core import cudnn_rnn_utils
+import lingvo.compat as tf
 from lingvo.core import py_utils
 from lingvo.core import quant_utils
 from lingvo.core import rnn_cell
-
-UNI_RNN = cudnn_rnn_ops.CUDNN_RNN_UNIDIRECTION
-BI_RNN = cudnn_rnn_ops.CUDNN_RNN_BIDIRECTION
+from lingvo.core import test_utils
+import numpy as np
 
 _INIT_RANDOM_SEED = 429891685
 _NUMPY_RANDOM_SEED = 12345
 _RANDOM_SEED = 98274
 
 
-class RNNCellTest(tf.test.TestCase):
+class RNNCellTest(test_utils.TestCase):
 
   def testGRUCell(self, inline=False, enable_gru_bias=True):
     with self.session(
@@ -136,6 +130,7 @@ class RNNCellTest(tf.test.TestCase):
                             inline=False,
                             couple_input_forget_gates=False,
                             apply_pruning=False,
+                            apply_pruning_to_projection=False,
                             enable_lstm_bias=True):
     with self.session(
         use_gpu=False, config=py_utils.SessionConfig(inline=inline)):
@@ -283,14 +278,14 @@ class RNNCellTest(tf.test.TestCase):
           quant_start_step=0,
           start_cap=1.0,
           end_cap=1.0)
-      params.qdomain.default = quant_utils.SymetricScheduledClipQDomain.Params(
+      params.qdomain.default = quant_utils.SymmetricScheduledClipQDomain.Params(
       ).Set(cc_schedule=cc_schedule.Copy())
-      params.qdomain.c_state = quant_utils.SymetricScheduledClipQDomain.Params(
+      params.qdomain.c_state = quant_utils.SymmetricScheduledClipQDomain.Params(
       ).Set(cc_schedule=cc_schedule.Copy())
-      params.qdomain.m_state = quant_utils.SymetricScheduledClipQDomain.Params(
+      params.qdomain.m_state = quant_utils.SymmetricScheduledClipQDomain.Params(
       ).Set(cc_schedule=cc_schedule.Copy())
       params.qdomain.fullyconnected = (
-          quant_utils.SymetricScheduledClipQDomain.Params().Set(
+          quant_utils.SymmetricScheduledClipQDomain.Params().Set(
               cc_schedule=cc_schedule.Copy()))
 
       params.cell_value_cap = None
@@ -328,27 +323,29 @@ class RNNCellTest(tf.test.TestCase):
       wts = tf.get_collection('LSTMCellSimple_vars')
       self.assertEqual(variable_count, len(wts))
 
-      # pyformat: disable
       if enable_lstm_bias:
         m_expected = [
-            [0.039524, 0.477746],
-            [0.006711, 0.447337],
-            [0.013737, 0.550308]]
+            [0.039062, 0.476562],
+            [0.007812, 0.445312],
+            [0.015625, 0.546875],
+        ]
         c_expected = [
-            [0.148034, 0.783791],
-            [0.019434, 0.714024],
-            [0.041597, 0.982957]]
+            [0.148438, 0.78125],
+            [0.023438, 0.710938],
+            [0.039062, 0.984375],
+        ]
       else:
         m_expected = [
-            [0.092073, 0.459963],
-            [0.048523, 0.182147],
-            [0.038683, 0.372883]]
+            [0.09375, 0.460938],
+            [0.046875, 0.179688],
+            [0.039062, 0.375],
+        ]
         c_expected = [
-            [0.232411, 0.792142],
-            [0.090428, 0.354446],
-            [0.074322, 0.660205]]
+            [0.234375, 0.789062],
+            [0.09375, 0.351562],
+            [0.078125, 0.664062],
+        ]
 
-      # pyformat: enable
       self.assertAllClose(m_expected, state1.m.eval())
       self.assertAllClose(c_expected, state1.c.eval())
 
@@ -412,6 +409,67 @@ class RNNCellTest(tf.test.TestCase):
                     [0.001656, 0.374141]]
       c_expected = [[0.241993, 0.820267], [0.086863, 0.349722],
                     [0.003176, 0.655448]]
+      self.assertAllClose(m_expected, state1.m.eval())
+      self.assertAllClose(c_expected, state1.c.eval())
+
+  def testLSTMSimple_MaskedProjections(self):
+    with self.session(
+        use_gpu=False, config=py_utils.SessionConfig(inline=False)):
+      params = rnn_cell.LSTMCellSimple.Params()
+      params.name = 'lstm'
+      params.output_nonlinearity = True
+      params.params_init = py_utils.WeightInit.Uniform(1.24, _INIT_RANDOM_SEED)
+
+      params.vn.global_vn = False
+      params.vn.per_step_vn = False
+      params.num_input_nodes = 2
+      params.num_output_nodes = 1
+      params.num_hidden_nodes = 2
+      params.apply_pruning = True
+      params.apply_pruning_to_projection = True
+
+      lstm = rnn_cell.LSTMCellSimple(params)
+
+      print('lstm vars = ', lstm.vars)
+      self.assertIn('wm', lstm.vars.wm.name)
+      self.assertIn('b', lstm.vars.b.name)
+      self.assertIn('w_proj', lstm.vars.w_proj.name)
+      self.assertIn('mask', lstm.vars.mask.name)
+      self.assertIn('threshold', lstm.vars.threshold.name)
+      self.assertIn('proj_mask', lstm.vars.proj_mask.name)
+      self.assertIn('proj_threshold', lstm.vars.proj_threshold.name)
+
+      self.assertEqual(lstm.theta.wm.get_shape(), tf.TensorShape([3, 8]))
+      self.assertEqual(lstm.theta.b.get_shape(), tf.TensorShape([8]))
+      self.assertEqual(lstm.theta.w_proj.get_shape(), tf.TensorShape([2, 1]))
+      self.assertEqual(lstm.theta.proj_mask.get_shape(), tf.TensorShape([2, 1]))
+
+      np.random.seed(_NUMPY_RANDOM_SEED)
+      inputs = py_utils.NestedMap(
+          act=[tf.constant(np.random.uniform(size=(3, 2)), tf.float32)],
+          padding=tf.zeros([3, 1]))
+      state0 = py_utils.NestedMap(
+          c=tf.constant(np.random.uniform(size=(3, 2)), tf.float32),
+          m=tf.constant(np.random.uniform(size=(3, 1)), tf.float32))
+
+      state1, _ = lstm.FPropDefaultTheta(state0, inputs)
+
+      # Initialize all the variables, and then run one step.
+      tf.global_variables_initializer().run()
+
+      variable_count = 3  # weights, biases, projection.
+      wts = tf.get_collection('LSTMCellSimple_vars')
+      self.assertEqual(variable_count, len(wts))
+
+      masks = tf.get_collection('masks')
+      self.assertEqual(2, len(masks))
+
+      threshold = tf.get_collection('thresholds')
+      self.assertEqual(2, len(threshold))
+
+      m_expected = [[0.414049], [0.076521], [0.356313]]
+      c_expected = [[0.270425, 0.840373], [0.349856, 0.440421],
+                    [0.261243, 0.889804]]
       self.assertAllClose(m_expected, state1.m.eval())
       self.assertAllClose(c_expected, state1.c.eval())
 
@@ -482,7 +540,7 @@ class RNNCellTest(tf.test.TestCase):
       child_p.vn.global_vn = False
       child_p.vn.per_step_vn = False
 
-      lstm = params.cls(params)
+      lstm = params.Instantiate()
 
       print('lstm vars = ', lstm.vars)
       for child_lstm in lstm.groups:
@@ -557,6 +615,118 @@ class RNNCellTest(tf.test.TestCase):
 
         assert num_shuffle_shards == 2
         out_expected = _ShuffleShards(out_expected)
+      self.assertAllClose(m_expected, m_actual)
+      self.assertAllClose(c_expected, c_actual)
+      self.assertAllClose(out_expected, out_actual)
+
+  def testLSTMSimpleGroupedNoInputSplit(self):
+    with self.session(
+        use_gpu=False, config=py_utils.SessionConfig(inline=False)):
+      params = rnn_cell.LSTMCellGrouped.Params()
+      params.name = 'lstm'
+      params.num_input_nodes = 8
+      params.num_output_nodes = 8
+      params.num_hidden_nodes = 16
+      params.num_groups = 4
+      params.num_shuffle_shards = 1
+      params.split_inputs = False
+      child_p = params.child_lstm_tpl
+      child_p.output_nonlinearity = True
+      child_p.params_init = py_utils.WeightInit.Uniform(1.24, _INIT_RANDOM_SEED)
+      child_p.vn.global_vn = False
+      child_p.vn.per_step_vn = False
+
+      lstm = params.Instantiate()
+
+      print('lstm vars = ', lstm.vars)
+      for child_lstm in lstm.groups:
+        self.assertIn('wm', child_lstm.vars.wm.name)
+        self.assertIn('b', child_lstm.vars.b.name)
+        self.assertIn('w_proj', child_lstm.vars.w_proj.name)
+
+        # 10 = 8 layer inputs + 2 recurrent
+        # 16 = 4 gates * 4 hidden units/group
+        self.assertEqual(child_lstm.theta.wm.get_shape(),
+                         tf.TensorShape([10, 16]))
+        self.assertEqual(child_lstm.theta.b.get_shape(), tf.TensorShape([16]))
+        # Projection from 4 hidden units (16 total / 4 groups) to 2 outputs
+        # (8 total / 4 groups)
+        self.assertEqual(child_lstm.theta.w_proj.get_shape(),
+                         tf.TensorShape([4, 2]))
+
+      np.random.seed(_NUMPY_RANDOM_SEED)
+      inputs = py_utils.NestedMap(
+          act=[tf.constant(np.random.uniform(size=(3, 8)), tf.float32)],
+          padding=tf.zeros([3, 1]))
+      state0 = py_utils.NestedMap(
+          groups=py_utils.SplitRecursively(
+              py_utils.NestedMap(
+                  c=tf.constant(np.random.uniform(size=(3, 16)), tf.float32),
+                  m=tf.constant(np.random.uniform(
+                      size=(3, 8)), tf.float32)), params.num_groups))
+
+      state1, _ = lstm.FPropDefaultTheta(state0, inputs)
+      self.assertEqual(params.num_groups, len(state1.groups))
+      out1 = lstm.GetOutput(state1)
+
+      # Initialize all the variables, and then run one step.
+      tf.global_variables_initializer().run()
+
+      variable_count = 3 * params.num_groups  # [wm, b, w_proj] for each group.
+      wts = tf.get_collection('LSTMCellSimple_vars')
+      self.assertEqual(variable_count, len(wts))
+
+      state1 = py_utils.ConcatRecursively(state1.groups)
+      m_actual = state1.m.eval()
+      c_actual = state1.c.eval()
+      out_actual = out1.eval()
+      print('m_actual =', np.array_repr(m_actual))
+      print('c_actual =', np.array_repr(c_actual))
+      print('out_actual =', np.array_repr(out_actual))
+
+      # pylint: disable=bad-whitespace, line-too-long
+      m_expected = [[
+          0.61734521, 0.02338588, 0.19424279, 0.31576008, 0.18000039, 0.1672723,
+          0.44075012, -0.06824636
+      ],
+                    [
+                        0.44694018, -0.01717547, 0.49302083, -0.27330822,
+                        0.35382932, -0.1967615, 0.44225505, -0.04489155
+                    ],
+                    [
+                        0.66018867, 0.09434807, 0.643556, 0.0383133, 0.74754262,
+                        -0.01860991, 0.48671043, 0.29460859
+                    ]]
+      c_expected = [[
+          -0.52246463, 0.67389512, 0.58692968, 0.75484836, -0.21763092,
+          0.45671225, -0.33593893, 1.03087521, -0.15525842, 0.31072262,
+          0.14663902, 0.64976436, -0.40176213, 0.36785093, 0.52653724,
+          0.73124039
+      ],
+                    [
+                        -0.27722716, 0.90508962, 0.39852297, 0.01676523,
+                        -0.7724061, 0.40351537, 0.20194794, 0.08798298,
+                        -0.39136624, 0.26601788, 0.21635406, -0.05538163,
+                        -0.36326468, 0.64099556, 0.25886536, -0.09711652
+                    ],
+                    [
+                        -0.63169837, 0.99831283, 0.53726614, 0.77321815,
+                        -0.67881596, 1.01512539, 0.38799196, 0.26393941,
+                        -0.87696433, 1.29881907, 0.60203284, 0.42675141,
+                        -0.24902672, 1.15422893, 0.70180357, 0.12213309
+                    ]]
+      out_expected = [[
+          0.61734521, 0.02338588, 0.19424279, 0.31576008, 0.18000039, 0.1672723,
+          0.44075012, -0.06824636
+      ],
+                      [
+                          0.44694018, -0.01717547, 0.49302083, -0.27330822,
+                          0.35382932, -0.1967615, 0.44225505, -0.04489155
+                      ],
+                      [
+                          0.66018867, 0.09434807, 0.643556, 0.0383133,
+                          0.74754262, -0.01860991, 0.48671043, 0.29460859
+                      ]]
       self.assertAllClose(m_expected, m_actual)
       self.assertAllClose(c_expected, c_actual)
       self.assertAllClose(out_expected, out_actual)
@@ -727,84 +897,6 @@ class RNNCellTest(tf.test.TestCase):
       # pyformat: enable
       self.assertAllClose(state0.m.eval(), state1.m.eval())
       self.assertAllClose(state0.c.eval(), state1.c.eval())
-
-  def testLSTMCuDNNCompliant(self):
-    if not tf.test.is_gpu_available(cuda_only=True):
-      return
-    batch_size = 32
-    input_nodes = 16
-    cell_nodes = 8
-    dtype = tf.float32
-
-    # LSTM inputs and states constants.
-    np.random.seed(_NUMPY_RANDOM_SEED)
-    inputs_v = np.random.uniform(size=(batch_size, input_nodes))
-    paddings_v = np.zeros((batch_size, 1))
-    # The last example is padded.
-    paddings_v[-1] = 1.
-    h_v = np.zeros((batch_size, cell_nodes))
-    c_v = np.zeros((batch_size, cell_nodes))
-    cudnn_helper = cudnn_rnn_utils.CuDNNLSTMInitializer(
-        input_nodes, cell_nodes, direction=UNI_RNN)
-
-    # tf CuDNN LSTM
-    with self.session(use_gpu=True, graph=tf.Graph()) as sess:
-      inputs = tf.expand_dims(tf.constant(inputs_v, dtype=dtype), 0)
-      state_h = tf.expand_dims(tf.constant(h_v, dtype=dtype), 0)
-      state_c = tf.expand_dims(tf.constant(c_v, dtype=dtype), 0)
-      cudnn_params = tf.get_variable(
-          'cudnn_opaque_params',
-          initializer=tf.random_uniform(
-              shape=[cudnn_helper.OpaqueParamsShape(dtype)], dtype=dtype),
-          validate_shape=False)
-
-      outputs, h, c, _ = gen_cudnn_rnn_ops.cudnn_rnn(
-          input=inputs,
-          input_h=state_h,
-          input_c=state_c,
-          params=cudnn_params,
-          rnn_mode='lstm',
-          input_mode='linear_input',
-          direction='unidirectional',
-          dropout=0.0,
-          is_training=True)
-      outputs = tf.squeeze(outputs, axis=0) * (1.0 - paddings_v)
-      h = tf.squeeze(h, axis=0) * (1.0 - paddings_v)
-      c = tf.squeeze(c, axis=0) * (1.0 - paddings_v)
-
-      # Initialize all the variables, and then run one step.
-      tf.global_variables_initializer().run()
-      cudnn_params_v = sess.run(cudnn_params)
-      cudnn_outputs_v, cudnn_h_v, cudnn_c_v = sess.run([outputs, h, c])
-
-    # LSTMCellCuDNNCompliant
-    with self.session(use_gpu=False, graph=tf.Graph()) as sess:
-      p = rnn_cell.LSTMCellCuDNNCompliant.Params()
-      p.name = 'lstm_cell_cudnn'
-      p.dtype = dtype
-      p.num_input_nodes = input_nodes
-      p.num_output_nodes = cell_nodes
-      lstm = rnn_cell.LSTMCellCuDNNCompliant(p)
-
-      assign_op = tf.assign(lstm.vars.wb, cudnn_params_v)
-
-      inputs = py_utils.NestedMap(
-          act=[tf.constant(inputs_v, dtype=p.dtype)],
-          padding=tf.constant(paddings_v, dtype=p.dtype))
-      state0 = py_utils.NestedMap(
-          m=tf.constant(h_v, dtype=dtype), c=tf.constant(c_v, dtype=dtype))
-      state1, _ = lstm.FPropDefaultTheta(state0, inputs)
-      state1.m *= 1.0 - paddings_v
-      state1.c *= 1.0 - paddings_v
-
-      # Initialize all the variables, and then run one step.
-      tf.global_variables_initializer().run()
-      assign_op.op.run()
-      outputs_v, h_v, c_v = sess.run([state1.m, state1.m, state1.c])
-
-    self.assertAllClose(cudnn_outputs_v, outputs_v)
-    self.assertAllClose(cudnn_h_v, h_v)
-    self.assertAllClose(cudnn_c_v, c_v)
 
   def _testConvLSTMHelper(self, inline=False):
     with self.session(
@@ -1139,7 +1231,7 @@ class RNNCellTest(tf.test.TestCase):
       inputs = py_utils.NestedMap(
           act=[tf.constant(np.random.uniform(size=(3, 2)), tf.float32)],
           padding=tf.zeros([3, 1]))
-      state0 = lstm.zero_state(3)
+      state0 = lstm.zero_state(lstm.theta, 3)
       state1, _ = lstm.FPropDefaultTheta(state0, inputs)
 
       # Initialize all the variables, and then run one step.
@@ -1224,7 +1316,7 @@ class RNNCellTest(tf.test.TestCase):
       params.zo_prob = 0.0
       params.random_seed = _RANDOM_SEED
 
-      lstm = params.cls(params)
+      lstm = params.Instantiate()
 
       np.random.seed(_NUMPY_RANDOM_SEED)
       inputs = py_utils.NestedMap(
@@ -1260,7 +1352,7 @@ class RNNCellTest(tf.test.TestCase):
       params.num_hidden_nodes = 2
       params.num_input_hidden_nodes = 2
 
-      lstm = params.cls(params)
+      lstm = params.Instantiate()
       print('lstm vars = ', lstm.vars)
 
       # Input projection.
@@ -1338,12 +1430,9 @@ class RNNCellTest(tf.test.TestCase):
       lstm_vars = lstm.vars
       print('lstm vars = ', lstm_vars)
       self.assertTrue('wm' in lstm_vars.wm.name)
-      self.assertTrue('cap' in lstm_vars.cc_schedule.cap.name)
 
       wm = lstm.theta.wm
-      cap = lstm.theta.cc_schedule.cap
       self.assertEqual(wm.get_shape(), tf.TensorShape([4, 8]))
-      self.assertEqual(cap.get_shape(), tf.TensorShape([]))
 
       np.random.seed(_NUMPY_RANDOM_SEED)
       inputs = py_utils.NestedMap(
@@ -1359,8 +1448,7 @@ class RNNCellTest(tf.test.TestCase):
       c_expected = [[0.0, 0.], [0.0, 0.], [0.0, 0.]]
       self.assertAllClose(m_expected, state1.m.eval())
       self.assertAllClose(c_expected, state1.c.eval())
-      update_op = lstm.PostTrainingStepUpdate(1)
-      sess.run(update_op)
+      sess.run(tf.assign(py_utils.GetOrCreateGlobalStepVar(), 1))
 
   def testQuantizedLayerNormalizedLSTMCell(self):
     params = rnn_cell.LayerNormalizedLSTMCell.Params()
@@ -1379,12 +1467,9 @@ class RNNCellTest(tf.test.TestCase):
     lstm_vars = lstm.vars
     print('lstm vars = ', lstm_vars)
     self.assertTrue('wm' in lstm_vars.wm.name)
-    self.assertTrue('cap' in lstm_vars.cc_schedule.cap.name)
 
     wm = lstm.theta.wm
-    cap = lstm.theta.cc_schedule.cap
     self.assertEqual(wm.get_shape(), tf.TensorShape([4, 8]))
-    self.assertEqual(cap.get_shape(), tf.TensorShape([]))
 
     np.random.seed(_NUMPY_RANDOM_SEED)
     inputs = py_utils.NestedMap(
@@ -1406,10 +1491,11 @@ class RNNCellTest(tf.test.TestCase):
       self.assertAllClose(m_expected, state1.m.eval())
       self.assertAllClose(c_expected, state1.c.eval())
 
-      self.assertEqual(5.0, cap.eval())
-      update_op = lstm.PostTrainingStepUpdate(1)
-      sess.run(update_op)
-      self.assertEqual(3.0, cap.eval())
+      self.assertEqual(5.0,
+                       lstm.cc_schedule.GetState(lstm.theta.cc_schedule).eval())
+      sess.run(tf.assign(py_utils.GetOrCreateGlobalStepVar(), 1))
+      self.assertEqual(3.0,
+                       lstm.cc_schedule.GetState(lstm.theta.cc_schedule).eval())
 
   def testQuantizedLSTMCell(self):
     with self.session(use_gpu=False) as sess:
@@ -1429,12 +1515,9 @@ class RNNCellTest(tf.test.TestCase):
       lstm_vars = lstm.vars
       print('lstm vars = ', lstm_vars)
       self.assertTrue('wm' in lstm_vars.wm.name)
-      self.assertTrue('cap' in lstm_vars.cc_schedule.cap.name)
 
       wm = lstm.theta.wm
-      cap = lstm.theta.cc_schedule.cap
       self.assertEqual(wm.get_shape(), tf.TensorShape([4, 8]))
-      self.assertEqual(cap.get_shape(), tf.TensorShape([]))
 
       np.random.seed(_NUMPY_RANDOM_SEED)
       inputs = py_utils.NestedMap(
@@ -1454,10 +1537,11 @@ class RNNCellTest(tf.test.TestCase):
       self.assertAllClose(m_expected, state1.m.eval())
       self.assertAllClose(c_expected, state1.c.eval())
 
-      self.assertEqual(5.0, cap.eval())
-      update_op = lstm.PostTrainingStepUpdate(1)
-      sess.run(update_op)
-      self.assertEqual(3.0, cap.eval())
+      self.assertEqual(5.0,
+                       lstm.cc_schedule.GetState(lstm.theta.cc_schedule).eval())
+      sess.run(tf.assign(py_utils.GetOrCreateGlobalStepVar(), 1))
+      self.assertEqual(3.0,
+                       lstm.cc_schedule.GetState(lstm.theta.cc_schedule).eval())
 
   def testQuantizedLSTMCellSimpleTrainingUnclipped(self):
     m_expected = [[0.097589, 0.579055], [0.046737, 0.187892],
@@ -1534,25 +1618,25 @@ class RNNCellTest(tf.test.TestCase):
           start_cap=5.0,
           end_cap=1.0)
 
-      qdomain = quant_utils.SymetricScheduledClipQDomain.Params().Set(
+      qdomain = quant_utils.SymmetricScheduledClipQDomain.Params().Set(
           cc_schedule=cc_schedule)
       params.qdomain.default = qdomain
 
       # M state uses the default 8-bit quantziation.
       cc_schedule = cc_schedule.Copy()
-      qdomain = quant_utils.SymetricScheduledClipQDomain.Params().Set(
+      qdomain = quant_utils.SymmetricScheduledClipQDomain.Params().Set(
           cc_schedule=cc_schedule)
       params.qdomain.m_state = qdomain
 
       # C state uses 16 bit quantization..
       cc_schedule = cc_schedule.Copy().Set(bits=16)
-      qdomain = quant_utils.SymetricScheduledClipQDomain.Params().Set(
+      qdomain = quant_utils.SymmetricScheduledClipQDomain.Params().Set(
           cc_schedule=cc_schedule)
       params.qdomain.c_state = qdomain
 
       # Fully connected layer clips slightly differently.
       cc_schedule = cc_schedule.Copy().Set(start_cap=64.0, end_cap=8.0)
-      qdomain = quant_utils.SymetricScheduledClipQDomain.Params().Set(
+      qdomain = quant_utils.SymmetricScheduledClipQDomain.Params().Set(
           cc_schedule=cc_schedule)
       params.qdomain.fullyconnected = qdomain
 
@@ -1584,15 +1668,14 @@ class RNNCellTest(tf.test.TestCase):
 
       if set_training_step:
         # Get it into the fully clipped/quantized part of the schedule.
-        update_op = lstm.PostTrainingStepUpdate(5)
-        sess.run(update_op)
+        sess.run(tf.assign(py_utils.GetOrCreateGlobalStepVar(), 5))
 
       # Outputs.
       self.assertAllClose(m_expected, state1.m.eval())
       self.assertAllClose(c_expected, state1.c.eval())
 
       # Cell reported zeros.
-      cell_zero_state = lstm.zero_state(batch_size=3)
+      cell_zero_state = lstm.zero_state(lstm.theta, batch_size=3)
       self.assertAllEqual(cell_zero_state.m.eval(),
                           tf.zeros_like(state0.m).eval())
       self.assertAllEqual(cell_zero_state.c.eval(),
@@ -1626,6 +1709,40 @@ class RNNCellTest(tf.test.TestCase):
                     [0.58900255, 0.58398587]]
       c_expected = [[0.45297623, 0.88433027], [0.42112729, 0.47023624],
                     [0.50483131, 0.89583319]]
+      m_v = state1.m.eval()
+      c_v = state1.c.eval()
+      print('m_v', np.array_repr(m_v))
+      print('c_v', np.array_repr(c_v))
+      self.assertAllClose(m_expected, m_v)
+      self.assertAllClose(c_expected, c_v)
+
+  def testSRUCellWithCellCap(self):
+    with self.session(use_gpu=False):
+      params = rnn_cell.SRUCell.Params()
+      params.name = 'sru'
+      params.params_init = py_utils.WeightInit.Uniform(1.24, _INIT_RANDOM_SEED)
+      params.num_input_nodes = 2
+      params.num_output_nodes = 2
+      params.zo_prob = 0.0
+      params.random_seed = _RANDOM_SEED
+      params.cell_value_cap = 0.4  # cell cap set to low level
+      sru = rnn_cell.SRUCell(params)
+
+      np.random.seed(_NUMPY_RANDOM_SEED)
+      inputs = py_utils.NestedMap(
+          act=[tf.constant(np.random.uniform(size=(3, 2)), tf.float32)],
+          padding=tf.zeros([3, 1]))
+      state0 = py_utils.NestedMap(
+          c=tf.constant(np.random.uniform(size=(3, 2)), tf.float32),
+          m=tf.constant(np.random.uniform(size=(3, 2)), tf.float32))
+      state1, _ = sru.FPropDefaultTheta(state0, inputs)
+
+      # Initialize all the variables, and then run one step.
+      tf.global_variables_initializer().run()
+
+      m_expected = [[0.569023, 0.472208], [0.314541, 0.260022],
+                    [0.543097, 0.379774]]
+      c_expected = [[0.4, 0.4], [0.4, 0.4], [0.4, 0.4]]
       m_v = state1.m.eval()
       c_v = state1.c.eval()
       print('m_v', np.array_repr(m_v))
@@ -1706,6 +1823,44 @@ class RNNCellTest(tf.test.TestCase):
       self.assertAllClose(m_expected, m_v)
       self.assertAllClose(c_expected, c_v)
 
+  def testSRUCellWithNonZeroBiasInit(self):
+    with self.session(use_gpu=False):
+      params = rnn_cell.SRUCell.Params()
+      params.name = 'sru'
+      params.params_init = py_utils.WeightInit.Uniform(1.24, _INIT_RANDOM_SEED)
+      params.num_input_nodes = 2
+      params.num_hidden_nodes = 3
+      params.num_output_nodes = 2
+      params.zo_prob = 0.0
+      params.random_seed = _RANDOM_SEED
+      params.bias_init = py_utils.WeightInit.Uniform(1.24, _INIT_RANDOM_SEED)
+
+      sru = rnn_cell.SRUCell(params)
+
+      np.random.seed(_NUMPY_RANDOM_SEED)
+      inputs = py_utils.NestedMap(
+          act=[tf.constant(np.random.uniform(size=(3, 2)), tf.float32)],
+          padding=tf.zeros([3, 1]))
+      state0 = py_utils.NestedMap(
+          c=tf.constant(np.random.uniform(size=(3, 3)), tf.float32),
+          m=tf.constant(np.random.uniform(size=(3, 2)), tf.float32))
+      state1, _ = sru.FPropDefaultTheta(state0, inputs)
+
+      # Initialize all the variables, and then run one step.
+      tf.global_variables_initializer().run()
+
+      m_expected = [[-0.012749, 0.788564], [-0.215866, 0.891125],
+                    [-0.420648, 0.713777]]
+      c_expected = [[-0.30021, 0.728136, 0.751739],
+                    [0.211836, 0.665222, 0.755629],
+                    [0.112793, 0.281477, 0.44823]]
+      m_v = state1.m.eval()
+      c_v = state1.c.eval()
+      print('m_v', np.array_repr(m_v))
+      print('c_v', np.array_repr(c_v))
+      self.assertAllClose(m_expected, m_v)
+      self.assertAllClose(c_expected, c_v)
+
   def testSRUCellWithLayerNormalization(self):
     with self.session(use_gpu=False):
       params = rnn_cell.SRUCell.Params()
@@ -1734,6 +1889,94 @@ class RNNCellTest(tf.test.TestCase):
       m_expected = [[0.301535, 0.744214], [0.38422, -0.524064],
                     [0.328908, 0.658833]]
       c_expected = [[-1., 1.], [0.999999, -0.999999], [-1., 1.]]
+      m_v = state1.m.eval()
+      c_v = state1.c.eval()
+      print('m_v', np.array_repr(m_v))
+      print('c_v', np.array_repr(c_v))
+      self.assertAllClose(m_expected, m_v)
+      self.assertAllClose(c_expected, c_v)
+
+  def testSRUCell_Masked(self):
+    with self.session(use_gpu=False):
+      params = rnn_cell.SRUCell.Params()
+      params.name = 'sru'
+      params.params_init = py_utils.WeightInit.Uniform(1.24, _INIT_RANDOM_SEED)
+      params.num_input_nodes = 2
+      params.num_output_nodes = 2
+      params.zo_prob = 0.0
+      params.random_seed = _RANDOM_SEED
+      params.apply_pruning = True
+
+      sru = rnn_cell.SRUCell(params)
+
+      np.random.seed(_NUMPY_RANDOM_SEED)
+      inputs = py_utils.NestedMap(
+          act=[tf.constant(np.random.uniform(size=(3, 2)), tf.float32)],
+          padding=tf.zeros([3, 1]))
+      state0 = py_utils.NestedMap(
+          c=tf.constant(np.random.uniform(size=(3, 2)), tf.float32),
+          m=tf.constant(np.random.uniform(size=(3, 2)), tf.float32))
+      state1, _ = sru.FPropDefaultTheta(state0, inputs)
+
+      # Initialize all the variables, and then run one step.
+      tf.global_variables_initializer().run()
+
+      m_expected = [[0.586573, 0.705203], [0.323755, 0.291334],
+                    [0.589002, 0.583986]]
+      c_expected = [[0.452976, 0.88433], [0.421127, 0.470236],
+                    [0.504831, 0.895833]]
+      m_v = state1.m.eval()
+      c_v = state1.c.eval()
+      print('m_v', np.array_repr(m_v))
+      print('c_v', np.array_repr(c_v))
+      self.assertAllClose(m_expected, m_v)
+      self.assertAllClose(c_expected, c_v)
+
+  def testSRUCell_MaskedProjection(self):
+    with self.session(use_gpu=False):
+      params = rnn_cell.SRUCell.Params()
+      params.name = 'sru'
+      params.params_init = py_utils.WeightInit.Uniform(1.24, _INIT_RANDOM_SEED)
+      params.num_input_nodes = 2
+      params.num_output_nodes = 2
+      params.num_hidden_nodes = 3
+      params.zo_prob = 0.0
+      params.random_seed = _RANDOM_SEED
+      params.apply_pruning = True
+      params.apply_pruning_to_projection = True
+
+      sru = rnn_cell.SRUCell(params)
+      print('sru vars = ', sru.vars)
+      self.assertIn('wm', sru.vars.wm.name)
+      self.assertIn('b', sru.vars.b.name)
+      self.assertIn('w_proj', sru.vars.w_proj.name)
+      self.assertIn('mask', sru.vars.mask.name)
+      self.assertIn('threshold', sru.vars.threshold.name)
+      self.assertIn('proj_mask', sru.vars.proj_mask.name)
+      self.assertIn('proj_threshold', sru.vars.proj_threshold.name)
+
+      self.assertEqual(sru.theta.wm.get_shape(), tf.TensorShape([2, 12]))
+      self.assertEqual(sru.theta.b.get_shape(), tf.TensorShape([12]))
+      self.assertEqual(sru.theta.w_proj.get_shape(), tf.TensorShape([3, 2]))
+      self.assertEqual(sru.theta.proj_mask.get_shape(), tf.TensorShape([3, 2]))
+
+      np.random.seed(_NUMPY_RANDOM_SEED)
+      inputs = py_utils.NestedMap(
+          act=[tf.constant(np.random.uniform(size=(3, 2)), tf.float32)],
+          padding=tf.zeros([3, 1]))
+      state0 = py_utils.NestedMap(
+          c=tf.constant(np.random.uniform(size=(3, 3)), tf.float32),
+          m=tf.constant(np.random.uniform(size=(3, 2)), tf.float32))
+      state1, _ = sru.FPropDefaultTheta(state0, inputs)
+
+      # Initialize all the variables, and then run one step.
+      tf.global_variables_initializer().run()
+
+      m_expected = [[0.049264, 0.549141], [-0.050149, 0.327422],
+                    [-0.193297, 0.283323]]
+      c_expected = [[-0.10113806, 0.8266117, 0.75368524],
+                    [0.31730127, 0.58325875, 0.64149243],
+                    [0.0947173, 0.48504758, 0.53909004]]
       m_v = state1.m.eval()
       c_v = state1.c.eval()
       print('m_v', np.array_repr(m_v))
@@ -1828,6 +2071,62 @@ class RNNCellTest(tf.test.TestCase):
       print('c_v', np.array_repr(c_v))
       self.assertAllClose(m_expected, m_v)
       self.assertAllClose(c_expected, c_v)
+
+  def _testLSTMZeroStateHelper(self,
+                               zero_state_init,
+                               expected_init_states=None,
+                               is_eval=False):
+    with self.session(use_gpu=False) as sess:
+      params = rnn_cell.LSTMCellSimple.Params()
+      params.name = 'lstm'
+      params.params_init = py_utils.WeightInit.Constant(0.1)
+      params.num_input_nodes = 2
+      params.num_output_nodes = 3
+      params.forget_gate_bias = 2.0
+      params.bias_init = py_utils.WeightInit.Constant(0.1)
+      params.dtype = tf.float64
+      params.zero_state_init_params = zero_state_init
+      params.is_eval = is_eval
+
+      lstm = rnn_cell.LSTMCellSimple(params)
+
+      np.random.seed(_NUMPY_RANDOM_SEED)
+      # Initialize all the variables, and then inspect.
+      tf.global_variables_initializer().run()
+      init_state_value = sess.run(lstm.zero_state(lstm.theta, 1))
+      tf.logging.info('testLSTMSimpleWithStateInitializationFn m = %s',
+                      np.array_repr(init_state_value['m']))
+      tf.logging.info('testLSTMSimpleWithStateInitializationFn c = %s',
+                      np.array_repr(init_state_value['c']))
+      self.assertAllClose(init_state_value['m'], expected_init_states['m'])
+      self.assertAllClose(init_state_value['c'], expected_init_states['c'])
+
+  def testLSTMSimpleZeroStateFnZeros(self):
+    m = [[0.0, 0.0, 0.0]]
+    c = [[0.0, 0.0, 0.0]]
+    self._testLSTMZeroStateHelper(py_utils.RNNCellStateInit.Zeros(), {
+        'm': m,
+        'c': c
+    })
+
+  def testLSTMSimpleZeroStateFnRandomNormal(self):
+    m = [[-0.630551, -1.208959, -0.348799]]
+    c = [[-0.630551, -1.208959, -0.348799]]
+    self._testLSTMZeroStateHelper(
+        py_utils.RNNCellStateInit.RandomNormal(seed=12345), {
+            'm': m,
+            'c': c
+        })
+
+  def testLSTMSimpleZeroStateFnRandomNormalInEval(self):
+    m = [[0.0, 0.0, 0.0]]
+    c = [[0.0, 0.0, 0.0]]
+    self._testLSTMZeroStateHelper(
+        py_utils.RNNCellStateInit.RandomNormal(seed=12345), {
+            'm': m,
+            'c': c
+        },
+        is_eval=True)
 
 
 if __name__ == '__main__':

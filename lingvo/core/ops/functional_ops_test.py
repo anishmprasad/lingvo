@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,15 +18,15 @@
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
-
+from lingvo.core import ops
+from lingvo.core import test_utils
 import numpy as np
 from six.moves import range
 import tensorflow as tf
 from tensorflow.python.framework import function
-from lingvo.core.ops import py_x_ops
 
 
-class FunctionalOpsTest(tf.test.TestCase):
+class FunctionalOpsTest(test_utils.TestCase):
 
   def testCachedCall(self):
     # A generator returns different values for each invocation.
@@ -45,7 +46,7 @@ class FunctionalOpsTest(tf.test.TestCase):
     g = tf.Graph()
     with g.as_default():
       _ = MyFn.name
-      u, v = py_x_ops.cached_call(MyFn, [tf.float32, tf.float32])
+      u, v = ops.cached_call(MyFn, [tf.float32, tf.float32])
 
     with self.session(graph=g) as sess:
       for _ in range(10):

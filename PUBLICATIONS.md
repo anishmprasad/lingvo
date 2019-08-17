@@ -7,14 +7,93 @@
 <!-- This document was automatically generated with bibtex2html 1.98
      (see http://www.lri.fr/~filliatr/bibtex2html/),
      with the following command:
-     /usr/bin/bibtex2html -s ieeetr -nodoc -nobibsource -nofooter -nf pdf pdf  -->
+     /usr/bin/bibtex2html -s ieeetr -nodoc -nobibsource -nofooter -nf pdf pdf -nf data data -nf sound_examples "sound examples"  -->
 
 
 <table>
 
 <tr valign="top">
 <td align="right" class="bibtexnumber">
-[<a name="chen2018best">1</a>]
+[<a name="wu2016google">1</a>]
+</td>
+<td class="bibtexitem">
+Y.&nbsp;Wu, M.&nbsp;Schuster, Z.&nbsp;Chen, Q.&nbsp;V. Le, M.&nbsp;Norouzi, W.&nbsp;Macherey, M.&nbsp;Krikun,
+  Y.&nbsp;Cao, Q.&nbsp;Gao, K.&nbsp;Macherey, J.&nbsp;Klingner, A.&nbsp;Shah, M.&nbsp;Johnson, X.&nbsp;Liu,
+  L.&nbsp;Kaiser, S.&nbsp;Gouws, Y.&nbsp;Kato, T.&nbsp;Kudo, H.&nbsp;Kazawa, K.&nbsp;Stevens, G.&nbsp;Kurian,
+  N.&nbsp;Patil, W.&nbsp;Wang, C.&nbsp;Young, J.&nbsp;Smith, J.&nbsp;Riesa, A.&nbsp;Rudnick, O.&nbsp;Vinyals,
+  G.&nbsp;Corrado, M.&nbsp;Hughes, and J.&nbsp;Dean, &ldquo;Google's neural machine translation
+  system: Bridging the gap between human and machine translation,&rdquo; tech. rep.,
+  2016.
+[&nbsp;<a href="https://arxiv.org/abs/1609.08144">pdf</a>&nbsp;]
+
+</td>
+</tr>
+
+
+<tr valign="top">
+<td align="right" class="bibtexnumber">
+[<a name="johnson-etal-2017-googles">2</a>]
+</td>
+<td class="bibtexitem">
+M.&nbsp;Johnson, M.&nbsp;Schuster, Q.&nbsp;V. Le, M.&nbsp;Krikun, Y.&nbsp;Wu, Z.&nbsp;Chen, N.&nbsp;Thorat,
+  F.&nbsp;Vi&eacute;gas, M.&nbsp;Wattenberg, G.&nbsp;Corrado, M.&nbsp;Hughes, and J.&nbsp;Dean,
+  &ldquo;Google's multilingual neural machine translation system: Enabling
+  zero-shot translation,&rdquo; <em>Transactions of the Association for
+  Computational Linguistics</em>, vol.&nbsp;5, pp.&nbsp;339--351, 2017.
+[&nbsp;<a href="http://dx.doi.org/10.1162/tacl_a_00065">DOI</a>&nbsp;| 
+<a href="https://www.aclweb.org/anthology/Q17-1024">pdf</a>&nbsp;]
+
+</td>
+</tr>
+
+
+<tr valign="top">
+<td align="right" class="bibtexnumber">
+[<a name="eriguchi2018zero">3</a>]
+</td>
+<td class="bibtexitem">
+A.&nbsp;Eriguchi, M.&nbsp;Johnson, O.&nbsp;Firat, H.&nbsp;Kazawa, and W.&nbsp;Macherey, &ldquo;Zero-shot
+  cross-lingual classification using multilingual neural machine translation,&rdquo;
+  <em>arXiv preprint arXiv:1809.04686</em>, 2018.
+[&nbsp;<a href="https://arxiv.org/pdf/1809.04686.pdf">pdf</a>&nbsp;]
+
+</td>
+</tr>
+
+
+<tr valign="top">
+<td align="right" class="bibtexnumber">
+[<a name="bapna2018training">4</a>]
+</td>
+<td class="bibtexitem">
+A.&nbsp;Bapna, M.&nbsp;X. Chen, O.&nbsp;Firat, Y.&nbsp;Cao, and Y.&nbsp;Wu, &ldquo;Training deeper neural
+  machine translation models with transparent attention,&rdquo; in <em>Proc.
+  Conference on Empirical Methods in Natural Language Processing (EMNLP)</em>,
+  2018.
+[&nbsp;<a href="https://arxiv.org/abs/1808.07561">pdf</a>&nbsp;]
+
+</td>
+</tr>
+
+
+<tr valign="top">
+<td align="right" class="bibtexnumber">
+[<a name="cherry2018revisiting">5</a>]
+</td>
+<td class="bibtexitem">
+C.&nbsp;Cherry, G.&nbsp;Foster, A.&nbsp;Bapna, O.&nbsp;Firat, and W.&nbsp;Macherey, &ldquo;Revisiting
+  character-based neural machine translation with capacity and compression,&rdquo;
+  in <em>Proc. Conference on Empirical Methods in Natural Language Processing
+  (EMNLP)</em>, 2018.
+[&nbsp;<a href="https://arxiv.org/abs/1808.09943">pdf</a>&nbsp;]
+
+</td>
+</tr>
+
+
+<tr valign="top">
+<td align="right" class="bibtexnumber">
+[<a name="chen2018best">6</a>]
 </td>
 <td class="bibtexitem">
 M.&nbsp;X. Chen, O.&nbsp;Firat, A.&nbsp;Bapna, M.&nbsp;Johnson, W.&nbsp;Macherey, G.&nbsp;Foster, L.&nbsp;Jones,
@@ -30,29 +109,12 @@ M.&nbsp;X. Chen, O.&nbsp;Firat, A.&nbsp;Bapna, M.&nbsp;Johnson, W.&nbsp;Macherey
 
 <tr valign="top">
 <td align="right" class="bibtexnumber">
-[<a name="cherry2018revisiting">2</a>]
+[<a name="kuczmarski2018gender">7</a>]
 </td>
 <td class="bibtexitem">
-C.&nbsp;Cherry, G.&nbsp;Foster, A.&nbsp;Bapna, O.&nbsp;Firat, and W.&nbsp;Macherey, &ldquo;Revisiting
-  character-based neural machine translation with capacity and compression,&rdquo;
-  in <em>Proc. Conference on Empirical Methods in Natural Language Processing
-  (EMNLP)</em>, 2018.
-[&nbsp;<a href="https://arxiv.org/abs/1808.09943">pdf</a>&nbsp;]
-
-</td>
-</tr>
-
-
-<tr valign="top">
-<td align="right" class="bibtexnumber">
-[<a name="bapna2018training">3</a>]
-</td>
-<td class="bibtexitem">
-A.&nbsp;Bapna, M.&nbsp;X. Chen, O.&nbsp;Firat, Y.&nbsp;Cao, and Y.&nbsp;Wu, &ldquo;Training deeper neural
-  machine translation models with transparent attention,&rdquo; in <em>Proc.
-  Conference on Empirical Methods in Natural Language Processing (EMNLP)</em>,
+J.&nbsp;Kuczmarski and M.&nbsp;Johnson, &ldquo;Gender-aware natural language translation,&rdquo;
   2018.
-[&nbsp;<a href="https://arxiv.org/abs/1808.07561">pdf</a>&nbsp;]
+[&nbsp;<a href="https://www.tdcommons.org/dpubs_series/1577/">pdf</a>&nbsp;]
 
 </td>
 </tr>
@@ -60,17 +122,25 @@ A.&nbsp;Bapna, M.&nbsp;X. Chen, O.&nbsp;Firat, Y.&nbsp;Cao, and Y.&nbsp;Wu, &ldq
 
 <tr valign="top">
 <td align="right" class="bibtexnumber">
-[<a name="wu2016google">4</a>]
+[<a name="aharoni2019massively">8</a>]
 </td>
 <td class="bibtexitem">
-Y.&nbsp;Wu, M.&nbsp;Schuster, Z.&nbsp;Chen, Q.&nbsp;V. Le, M.&nbsp;Norouzi, W.&nbsp;Macherey, M.&nbsp;Krikun,
-  Y.&nbsp;Cao, Q.&nbsp;Gao, K.&nbsp;Macherey, J.&nbsp;Klingner, A.&nbsp;Shah, M.&nbsp;Johnson, X.&nbsp;Liu,
-  L.&nbsp;Kaiser, S.&nbsp;Gouws, Y.&nbsp;Kato, T.&nbsp;Kudo, H.&nbsp;Kazawa, K.&nbsp;Stevens, G.&nbsp;Kurian,
-  N.&nbsp;Patil, W.&nbsp;Wang, C.&nbsp;Young, J.&nbsp;Smith, J.&nbsp;Riesa, A.&nbsp;Rudnick, O.&nbsp;Vinyals,
-  G.&nbsp;Corrado, M.&nbsp;Hughes, and J.&nbsp;Dean, &ldquo;Google's neural machine translation
-  system: Bridging the gap between human and machine translation,&rdquo; tech. rep.,
-  2016.
-[&nbsp;<a href="https://arxiv.org/abs/1609.08144">pdf</a>&nbsp;]
+R.&nbsp;Aharoni, M.&nbsp;Johnson, and O.&nbsp;Firat, &ldquo;Massively multilingual neural machine
+  translation,&rdquo; <em>arXiv preprint arXiv:1903.00089</em>, 2019.
+[&nbsp;<a href="https://arxiv.org/pdf/1903.00089.pdf">pdf</a>&nbsp;]
+
+</td>
+</tr>
+
+
+<tr valign="top">
+<td align="right" class="bibtexnumber">
+[<a name="freitag2019text">9</a>]
+</td>
+<td class="bibtexitem">
+M.&nbsp;Freitag, I.&nbsp;Caswell, and S.&nbsp;Roy, &ldquo;Text Repair Model for Neural
+  Machine Translation,&rdquo; <em>arXiv e-prints</em>, 2019.
+[&nbsp;<a href="https://arxiv.org/abs/1904.04790">pdf</a>&nbsp;]
 
 </td>
 </tr>
@@ -81,7 +151,7 @@ Y.&nbsp;Wu, M.&nbsp;Schuster, Z.&nbsp;Chen, Q.&nbsp;V. Le, M.&nbsp;Norouzi, W.&n
 <!-- This document was automatically generated with bibtex2html 1.98
      (see http://www.lri.fr/~filliatr/bibtex2html/),
      with the following command:
-     /usr/bin/bibtex2html -s ieeetr -nodoc -nobibsource -nofooter -nf pdf pdf  -->
+     /usr/bin/bibtex2html -s ieeetr -nodoc -nobibsource -nofooter -nf pdf pdf -nf data data -nf sound_examples "sound examples"  -->
 
 
 <table>
@@ -273,7 +343,7 @@ S.&nbsp;Toshniwal, A.&nbsp;Kannan, C.&nbsp;C. Chiu, Y.&nbsp;Wu, T.&nbsp;N. Saina
   comparison of techniques for language model integration in encoder-decoder
   speech recognition,&rdquo; in <em>Proc. IEEE Spoken Language Technology
   Workshop (SLT)</em>, 2018.
-[&nbsp;<a href="https://arxiv.org/pdf/1807.10857.pdf">pdf</a>&nbsp;]
+[&nbsp;<a href="https://arxiv.org/abs/1807.10857">pdf</a>&nbsp;]
 
 </td>
 </tr>
@@ -287,7 +357,7 @@ S.&nbsp;Toshniwal, A.&nbsp;Kannan, C.&nbsp;C. Chiu, Y.&nbsp;Wu, T.&nbsp;N. Saina
 G.&nbsp;Pundak, T.&nbsp;N. Sainath, R.&nbsp;Prabhavalkar, A.&nbsp;Kannan, and D.&nbsp;Zhao, &ldquo;Deep
   context: End-to-end contextual speech recognition,&rdquo; in <em>Proc. IEEE
   Spoken Language Technology Workshop (SLT)</em>, 2018.
-[&nbsp;<a href="https://arxiv.org/pdf/1808.02480.pdf">pdf</a>&nbsp;]
+[&nbsp;<a href="https://arxiv.org/abs/1808.02480">pdf</a>&nbsp;]
 
 </td>
 </tr>
@@ -320,6 +390,150 @@ J.&nbsp;Guo, T.&nbsp;N. Sainath, and R.&nbsp;J. Weiss, &ldquo;A spelling correct
 
 </td>
 </tr>
+
+
+<tr valign="top">
+<td align="right" class="bibtexnumber">
+[<a name="alon2019contextual">17</a>]
+</td>
+<td class="bibtexitem">
+U.&nbsp;Alon, G.&nbsp;Pundak, and T.&nbsp;N. Sainath, &ldquo;Contextual speech recognition with
+  difficult negative training examples,&rdquo; in <em>Proc. IEEE International
+  Conference on Acoustics, Speech, and Signal Processing (ICASSP)</em>, 2019.
+[&nbsp;<a href="https://arxiv.org/abs/1810.12170">pdf</a>&nbsp;]
+
+</td>
+</tr>
+
+
+<tr valign="top">
+<td align="right" class="bibtexnumber">
+[<a name="qin2019imperceptible">18</a>]
+</td>
+<td class="bibtexitem">
+Y.&nbsp;Qin, N.&nbsp;Carlini, I.&nbsp;Goodfellow, G.&nbsp;Cottrell, and C.&nbsp;Raffel, &ldquo;Imperceptible,
+  robust, and targeted adversarial examples for automatic speech recognition,&rdquo;
+  in <em>Proc. International Conference on Machine Learning (ICML)</em>, 2019.
+[&nbsp;<a href="https://arxiv.org/abs/1903.10346">pdf</a>&nbsp;]
+
+</td>
+</tr>
+
+
+<tr valign="top">
+<td align="right" class="bibtexnumber">
+[<a name="park2019specaugment">19</a>]
+</td>
+<td class="bibtexitem">
+D.&nbsp;S. Park, W.&nbsp;Chan, Y.&nbsp;Zhang, C.&nbsp;Chiu, B.&nbsp;Zoph, E.&nbsp;D. Cubuk, and Q.&nbsp;V. Le,
+  &ldquo;SpecAugment: A Simple Data Augmentation Method for Automatic Speech
+  Recognition,&rdquo; in <em>arXiv</em>, 2019.
+[&nbsp;<a href="https://arxiv.org/pdf/1904.08779.pdf">pdf</a>&nbsp;]
+
+</td>
+</tr>
+
+
+<tr valign="top">
+<td align="right" class="bibtexnumber">
+[<a name="li2019semisupervised">20</a>]
+</td>
+<td class="bibtexitem">
+B.&nbsp;Li, T.&nbsp;N. Sainath, R.&nbsp;Pang, and Z.&nbsp;Wu, &ldquo;Semi-supervised training for
+  end-to-end models via weak distillation,&rdquo; in <em>Proc. IEEE International
+  Conference on Acoustics, Speech, and Signal Processing (ICASSP)</em>, 2019.
+[&nbsp;<a href="https://ieeexplore.ieee.org/document/8682172">pdf</a>&nbsp;]
+
+</td>
+</tr>
+
+
+<tr valign="top">
+<td align="right" class="bibtexnumber">
+[<a name="chang2019joint">21</a>]
+</td>
+<td class="bibtexitem">
+S.-Y. Chang, R.&nbsp;Prabhavalkar, Y.&nbsp;He, T.&nbsp;N. Sainath, and G.&nbsp;Simko, &ldquo;Joint
+  endpointing and decoding with end-to-end models,&rdquo; in <em>Proc. IEEE
+  International Conference on Acoustics, Speech, and Signal Processing
+  (ICASSP)</em>, 2019.
+[&nbsp;<a href="https://ieeexplore.ieee.org/document/8683109">pdf</a>&nbsp;]
+
+</td>
+</tr>
+
+
+<tr valign="top">
+<td align="right" class="bibtexnumber">
+[<a name="heymann2019improving">22</a>]
+</td>
+<td class="bibtexitem">
+J.&nbsp;Heymann, K.&nbsp;C. Sim, and B.&nbsp;Li, &ldquo;Improving ctc using stimulated learning for
+  sequence modeling,&rdquo; in <em>Proc. IEEE International Conference on
+  Acoustics, Speech, and Signal Processing (ICASSP)</em>, 2019.
+[&nbsp;<a href="https://ieeexplore.ieee.org/document/8682700">pdf</a>&nbsp;]
+
+</td>
+</tr>
+
+
+<tr valign="top">
+<td align="right" class="bibtexnumber">
+[<a name="bruguier2019phoebe">23</a>]
+</td>
+<td class="bibtexitem">
+A.&nbsp;Bruguier, R.&nbsp;Prabhavalkar, G.&nbsp;Pundak, and T.&nbsp;N. Sainath, &ldquo;Phoebe:
+  Pronunciation-aware contextualization for end-to-end speech recognition,&rdquo; in
+  <em>Proc. IEEE International Conference on Acoustics, Speech, and Signal
+  Processing (ICASSP)</em>, 2019.
+[&nbsp;<a href="https://ieeexplore.ieee.org/document/8682441">pdf</a>&nbsp;]
+
+</td>
+</tr>
+
+
+<tr valign="top">
+<td align="right" class="bibtexnumber">
+[<a name="he2019streaming">24</a>]
+</td>
+<td class="bibtexitem">
+Y.&nbsp;He, T.&nbsp;N. Sainath, R.&nbsp;Prabhavalkar, I.&nbsp;McGraw, R.&nbsp;Alvarez, D.&nbsp;Zhao,
+  D.&nbsp;Rybach, A.&nbsp;Kannan, Y.&nbsp;Wu, R.&nbsp;Pang, Q.&nbsp;Liang, D.&nbsp;Bhatia, Y.&nbsp;Shangguan,
+  B.&nbsp;Li, G.&nbsp;Pundak, K.&nbsp;C. Sim, T.&nbsp;Bagby, S.-Y. Chang, K.&nbsp;Rao, and
+  A.&nbsp;Gruenstein, &ldquo;Streaming end-to-end speech recognition for mobile
+  devices,&rdquo; in <em>Proc. IEEE International Conference on Acoustics,
+  Speech, and Signal Processing (ICASSP)</em>, 2019.
+[&nbsp;<a href="https://arxiv.org/abs/1811.06621">pdf</a>&nbsp;]
+
+</td>
+</tr>
+
+
+<tr valign="top">
+<td align="right" class="bibtexnumber">
+[<a name="irie2019unit">25</a>]
+</td>
+<td class="bibtexitem">
+K.&nbsp;Irie, R.&nbsp;Prabhavalkar, A.&nbsp;Kannan, A.&nbsp;Bruguier, D.&nbsp;Rybach, and P.&nbsp;Nguyen,
+  &ldquo;Model unit exploration for sequence-to-sequence speech recognition,&rdquo; <em>
+  arXiv e-prints</em>, 2019.
+[&nbsp;<a href="https://arxiv.org/abs/1902.01955">pdf</a>&nbsp;]
+
+</td>
+</tr>
+
+
+<tr valign="top">
+<td align="right" class="bibtexnumber">
+[<a name="peyser2019numerics">26</a>]
+</td>
+<td class="bibtexitem">
+C.&nbsp;Peyser, H.&nbsp;Zhang, T.&nbsp;N. Sainath, and Z.&nbsp;Wu, &ldquo;Improving Performance of
+  End-to-End ASR on Numeric Sequences,&rdquo; in <em>Proc. Interspeech</em>, 2019.
+[&nbsp;<a href="https://arxiv.org/abs/1907.01372">pdf</a>&nbsp;]
+
+</td>
+</tr>
 </table>
 
 ## Language understanding
@@ -327,7 +541,7 @@ J.&nbsp;Guo, T.&nbsp;N. Sainath, and R.&nbsp;J. Weiss, &ldquo;A spelling correct
 <!-- This document was automatically generated with bibtex2html 1.98
      (see http://www.lri.fr/~filliatr/bibtex2html/),
      with the following command:
-     /usr/bin/bibtex2html -s ieeetr -nodoc -nobibsource -nofooter -nf pdf pdf  -->
+     /usr/bin/bibtex2html -s ieeetr -nodoc -nobibsource -nofooter -nf pdf pdf -nf data data -nf sound_examples "sound examples"  -->
 
 
 <table>
@@ -370,7 +584,7 @@ P.&nbsp;Haghani, A.&nbsp;Narayanan, M.&nbsp;Bacchiani, G.&nbsp;Chuang, N.&nbsp;G
   R.&nbsp;Prabhavalkar, Z.&nbsp;Qu, and A.&nbsp;Waters, &ldquo;From Audio to Semantics: Approaches
   to End-to-End Spoken Language Understanding,&rdquo; in <em>Proc. IEEE Spoken
   Language Technology Workshop (SLT)</em>, 2018.
-[&nbsp;<a href="https://arxiv.org/pdf/1809.09190.pdf">pdf</a>&nbsp;]
+[&nbsp;<a href="https://arxiv.org/abs/1809.09190">pdf</a>&nbsp;]
 
 </td>
 </tr>
@@ -381,7 +595,7 @@ P.&nbsp;Haghani, A.&nbsp;Narayanan, M.&nbsp;Bacchiani, G.&nbsp;Chuang, N.&nbsp;G
 <!-- This document was automatically generated with bibtex2html 1.98
      (see http://www.lri.fr/~filliatr/bibtex2html/),
      with the following command:
-     /usr/bin/bibtex2html -s ieeetr -nodoc -nobibsource -nofooter -nf pdf pdf  -->
+     /usr/bin/bibtex2html -s ieeetr -nodoc -nobibsource -nofooter -nf pdf pdf -nf data data -nf sound_examples "sound examples"  -->
 
 
 <table>
@@ -396,7 +610,8 @@ J.&nbsp;Shen, R.&nbsp;Pang, R.&nbsp;J. Weiss, M.&nbsp;Schuster, N.&nbsp;Jaitly, 
   Y.&nbsp;Wu, &ldquo;Natural TTS synthesis by conditioning WaveNet on mel spectrogram
   predictions,&rdquo; in <em>Proc. IEEE International Conference on Acoustics,
   Speech, and Signal Processing (ICASSP)</em>, 2018.
-[&nbsp;<a href="https://arxiv.org/abs/1703.10135">pdf</a>&nbsp;]
+[&nbsp;<a href="https://google.github.io/tacotron/publications/tacotron2/index.html">sound examples</a>&nbsp;| 
+<a href="https://arxiv.org/abs/1703.10135">pdf</a>&nbsp;]
 
 </td>
 </tr>
@@ -411,7 +626,8 @@ J.&nbsp;Chorowski, R.&nbsp;J. Weiss, R.&nbsp;A. Saurous, and S.&nbsp;Bengio, &ld
   backpropagation for speech texture generation and voice conversion,&rdquo; in <em>
   Proc. IEEE International Conference on Acoustics, Speech, and Signal
   Processing (ICASSP)</em>, 2018.
-[&nbsp;<a href="https://arxiv.org/abs/1712.08363">pdf</a>&nbsp;]
+[&nbsp;<a href="https://google.github.io/speech_style_transfer/samples.html">sound examples</a>&nbsp;| 
+<a href="https://arxiv.org/abs/1712.08363">pdf</a>&nbsp;]
 
 </td>
 </tr>
@@ -426,7 +642,8 @@ Y.&nbsp;Jia, Y.&nbsp;Zhang, R.&nbsp;J. Weiss, Q.&nbsp;Wang, J.&nbsp;Shen, F.&nbs
   R.&nbsp;Pang, I.&nbsp;Lopez-Moreno, and Y.&nbsp;Wu, &ldquo;Transfer learning from speaker
   verification to multispeaker text-to-speech synthesis,&rdquo; in <em>Advances in
   Neural Information Processing Systems</em>, 2018.
-[&nbsp;<a href="https://arxiv.org/abs/1806.04558">pdf</a>&nbsp;]
+[&nbsp;<a href="https://google.github.io/tacotron/publications/speaker_adaptation/index.html">sound examples</a>&nbsp;| 
+<a href="https://arxiv.org/abs/1806.04558">pdf</a>&nbsp;]
 
 </td>
 </tr>
@@ -441,7 +658,8 @@ W.&nbsp;N. Hsu, Y.&nbsp;Zhang, R.&nbsp;J. Weiss, H.&nbsp;Zen, Y.&nbsp;Wu, Y.&nbs
   Z.&nbsp;Chen, J.&nbsp;Shen, P.&nbsp;Nguyen, and R.&nbsp;Pang, &ldquo;Hierarchical generative modeling
   for controllable speech synthesis,&rdquo; in <em>Proc. International Conference
   on Learning Representations (ICLR)</em>, 2019.
-[&nbsp;<a href="https://arxiv.org/abs/1810.07217">pdf</a>&nbsp;]
+[&nbsp;<a href="https://google.github.io/tacotron/publications/gmvae_controllable_tts/index.html">sound examples</a>&nbsp;| 
+<a href="https://arxiv.org/abs/1810.07217">pdf</a>&nbsp;]
 
 </td>
 </tr>
@@ -460,14 +678,61 @@ W.&nbsp;N. Hsu, Y.&nbsp;Zhang, R.&nbsp;J. Weiss, Y.&nbsp;A. Chung, Y.&nbsp;Wang,
 
 </td>
 </tr>
+
+
+<tr valign="top">
+<td align="right" class="bibtexnumber">
+[<a name="zen2019libritts">6</a>]
+</td>
+<td class="bibtexitem">
+H.&nbsp;Zen, V.&nbsp;Dang, R.&nbsp;Clark, Y.&nbsp;Zhang, R.&nbsp;J. Weiss, Y.&nbsp;Jia, Z.&nbsp;Chen, and Y.&nbsp;Wu,
+  &ldquo;LibriTTS: A corpus derived from LibriSpeech for text-to-speech,&rdquo; in
+  <em>Proc. Interspeech</em>, 2019.
+[&nbsp;<a href="http://www.openslr.org/60">data</a>&nbsp;| 
+<a href="https://arxiv.org/abs/1904.02882">pdf</a>&nbsp;]
+
+</td>
+</tr>
+
+
+<tr valign="top">
+<td align="right" class="bibtexnumber">
+[<a name="biadsy2019parrotron">7</a>]
+</td>
+<td class="bibtexitem">
+F.&nbsp;Biadsy, R.&nbsp;J. Weiss, P.&nbsp;Moreno, D.&nbsp;Kanvesky, and Y.&nbsp;Jia, &ldquo;Parrotron: An
+  end-to-end speech-to-speech conversion model and its applications to
+  hearing-impaired speech and speech separation,&rdquo; in <em>Proc. Interspeech</em>,
+  2019.
+[&nbsp;<a href="https://google.github.io/tacotron/publications/parrotron">sound examples</a>&nbsp;| 
+<a href="https://arxiv.org/abs/1904.04169">pdf</a>&nbsp;]
+
+</td>
+</tr>
+
+
+<tr valign="top">
+<td align="right" class="bibtexnumber">
+[<a name="zhang2019learning">8</a>]
+</td>
+<td class="bibtexitem">
+Y.&nbsp;Zhang, R.&nbsp;J. Weiss, H.&nbsp;Zen, Y.&nbsp;Wu, Z.&nbsp;Chen, R.&nbsp;J. Skerry-Ryan, Y.&nbsp;Jia,
+  A.&nbsp;Rosenberg, and B.&nbsp;Ramabhadran, &ldquo;Learning to speak fluently in a foreign
+  language: Multilingual speech synthesis and cross-language voice cloning,&rdquo;
+  in <em>Proc. Interspeech</em>, 2019.
+[&nbsp;<a href="http://google.github.io/tacotron/publications/multilingual">sound examples</a>&nbsp;| 
+<a href="https://arxiv.org/abs/1907.04448">pdf</a>&nbsp;]
+
+</td>
+</tr>
 </table>
 
-## Speech-to-text translation
+## Speech translation
 
 <!-- This document was automatically generated with bibtex2html 1.98
      (see http://www.lri.fr/~filliatr/bibtex2html/),
      with the following command:
-     /usr/bin/bibtex2html -s ieeetr -nodoc -nobibsource -nofooter -nf pdf pdf  -->
+     /usr/bin/bibtex2html -s ieeetr -nodoc -nobibsource -nofooter -nf pdf pdf -nf data data -nf sound_examples "sound examples"  -->
 
 
 <table>
@@ -496,6 +761,21 @@ Y.&nbsp;Jia, M.&nbsp;Johnson, W.&nbsp;Macherey, R.&nbsp;J. Weiss, Y.&nbsp;Cao, C
   end-to-end speech-to-text translation,&rdquo; in <em>Proc. IEEE International
   Conference on Acoustics, Speech, and Signal Processing (ICASSP)</em>, 2019.
 [&nbsp;<a href="https://arxiv.org/abs/1811.02050">pdf</a>&nbsp;]
+
+</td>
+</tr>
+
+
+<tr valign="top">
+<td align="right" class="bibtexnumber">
+[<a name="jia2019direct">3</a>]
+</td>
+<td class="bibtexitem">
+Y.&nbsp;Jia, R.&nbsp;J. Weiss, F.&nbsp;Biadsy, W.&nbsp;Macherey, M.&nbsp;Johnson, Z.&nbsp;Chen, and Y.&nbsp;Wu,
+  &ldquo;Direct speech-to-speech translation with a sequence-to-sequence model,&rdquo; in
+  <em>Proc. Interspeech</em>, 2019.
+[&nbsp;<a href="https://google-research.github.io/lingvo-lab/translatotron">sound examples</a>&nbsp;| 
+<a href="https://arxiv.org/abs/1904.06037">pdf</a>&nbsp;]
 
 </td>
 </tr>

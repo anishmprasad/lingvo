@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,25 +24,26 @@ import random
 import re
 import shutil
 
-import numpy as np
-import tensorflow as tf
-
 from lingvo import base_trial
 from lingvo import model_registry
 from lingvo import trainer
+import lingvo.compat as tf
 from lingvo.core import base_input_generator
 from lingvo.core import base_layer
 from lingvo.core import base_model
 from lingvo.core import py_utils
+from lingvo.core import test_utils
 from lingvo.core import trainer_test_utils
 from lingvo.tasks.image.input_generator import FakeMnistData
 import lingvo.tasks.image.params.mnist  # pylint: disable=unused-import
-import lingvo.tasks.lm.params.one_billion_wds  # pylint: disable=unused-import
+import lingvo.tasks.punctuator.params.codelab  # pylint: disable=unused-import
+import numpy as np
+from six.moves import range
 
 FLAGS = tf.flags.FLAGS
 
 
-class BaseTrainerTest(tf.test.TestCase):
+class BaseTrainerTest(test_utils.TestCase):
   """Base class for the test cases."""
 
   def __init__(self, *args, **kwargs):
@@ -83,7 +85,7 @@ class BaseTrainerTest(tf.test.TestCase):
 
   def _HasLine(self, filename, pattern):
     """Returns True iff one line in the given file matches the pattern."""
-    with tf.gfile.FastGFile(filename, 'r') as f:
+    with tf.gfile.GFile(filename, 'r') as f:
       lines = f.readlines()
     return any(re.search(pattern, _) for _ in lines)
 
@@ -165,17 +167,42 @@ class TrainerTest(BaseTrainerTest):
     self.assertTrue(self._HasFile(dec_files, 'params.txt'))
     self.assertTrue(self._HasFile(dec_files, 'decoder_dev.pbtxt'))
     self.assertTrue(self._HasFile(dec_files, 'tfevents'))
-    self.assertTrue(self._HasFile(dec_files, 'score'))
+    # Only the score for the 2-step checkpoint should be present.
+    self.assertTrue(
+        tf.io.gfile.exists(
+            os.path.join(logdir, 'decoder_dev/score-00000002.txt')))
+    self.assertFalse(
+        tf.io.gfile.exists(
+            os.path.join(logdir, 'decoder_dev/score-00000000.txt')))
     self.assertTrue(
         self._HasLine(
             self._GetMatchedFileName(dec_files, 'score'), 'examples/sec'))
+
+    # Test customization of an eval checkpoint.  Create a new logdir / decoder
+    # but point the eval checkpoint to the 0th checkpoint of the most
+    # recent experiment.
+    new_logdir = os.path.join(tf.test.get_temp_dir(),
+                              'decoder_test' + str(random.random()))
+    FLAGS.logdir = new_logdir
+    cfg = self._GetTestConfig()
+    cfg.task.eval.load_checkpoint_from = os.path.join(logdir,
+                                                      'train/ckpt-00000000')
+
+    runner_manager.StartRunners([self._CreateDecoderDev(cfg)])
+    # Only the score for the 0th checkpoint should be present.
+    self.assertTrue(
+        tf.io.gfile.exists(
+            os.path.join(new_logdir, 'decoder_dev/score-00000000.txt')))
+    self.assertFalse(
+        tf.io.gfile.exists(
+            os.path.join(new_logdir, 'decoder_dev/score-00000002.txt')))
 
   def testWriteInferenceGraph(self):
     random.seed()
     logdir = os.path.join(tf.test.get_temp_dir(),
                           'inference_graphs' + str(random.random()))
     FLAGS.logdir = logdir
-    cfg = 'lm.one_billion_wds.WordLevelOneBwdsSimpleSampledSoftmax'
+    cfg = 'punctuator.codelab.RNMTModel'
     trainer.RunnerManager(cfg).WriteInferenceGraph()
     inference_files = tf.gfile.Glob(logdir + '/inference_graphs/*')
     self.assertTrue(self._HasFile(inference_files, 'inference.pbtxt'))

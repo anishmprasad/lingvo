@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,9 +24,9 @@ import os
 from lingvo import model_registry
 from lingvo.core import base_model_params
 from lingvo.core import layers
-from lingvo.core import lr_schedule
 from lingvo.core import optimizer
 from lingvo.core import py_utils
+from lingvo.core import schedule
 from lingvo.core import tokenizers
 from lingvo.tasks.lm import input_generator as lm_inp
 from lingvo.tasks.lm import layers as lm_layers
@@ -135,7 +136,7 @@ class WordLevelOneBwdsBase(base_model_params.SingleTaskModelParams):
     # threshold.
     tp.learning_rate = 0.2
     tp.lr_schedule = (
-        lr_schedule.PiecewiseConstantLearningRateSchedule.Params().Set(
+        schedule.PiecewiseConstantLearningRateSchedule.Params().Set(
             boundaries=[], values=[1.0]))
     tp.l2_regularizer_weight = None  # No regularization.
     tp.optimizer = optimizer.Adagrad.Params()
@@ -173,3 +174,93 @@ class WordLevelOneBwdsSimpleSampledSoftmaxTiny(
   NUM_SAMPLED = 8
   NUM_SOFTMAX_SHARDS = 8
   RNN_STATE_DIM = 32
+
+
+# Example large transformer model using GPIPE.
+# Relative throughput on multiple V100s, each with 16GB ram.
+# GPUs throughput
+# 1    1
+# 2    0.93
+# 4    0.85
+# 8    0.775
+@model_registry.RegisterSingleTaskModel
+class OneBWdsGPipeTransformerWPM(WordLevelOneBwdsBase):
+  """LM using gpipe transformer."""
+  VOCAB_SIZE = 32000
+  EMBEDDING_DIM = 2048
+  BATCH_SIZE = 32
+  MAX_TOKENS = 1024  # The max sequence length in one example.
+
+  # GPIPE related params.
+  GPUS = 4
+  # A list of ending index for each split/partition in ascending order.
+  # For example SPLITS = [8, 16, 24, 32] defined a 32 layer model with 4 splits,
+  # each of which contains 8 layers.
+  # The number belows runs on 16GB-V100s. Your mileage may vary.
+  SPLITS = [8 * (i + 1) for i in range(GPUS)]
+  LAYERS = SPLITS[-1]
+  # Set NUM_MICRO_BATCHES >= len(SPLITS) * 4 to minimize gpipe bubble.
+  NUM_MICRO_BATCHES = 32
+
+  @classmethod
+  def Train(cls):
+    p = super(OneBWdsGPipeTransformerWPM, cls).Train()
+    # Replace it with your own wordpiece tokenizer.
+    p.tokenizer = tokenizers.AsciiTokenizer.Params()
+    p.target_max_length = cls.MAX_TOKENS
+    p.tokenizer.target_sos_id = 1
+    p.tokenizer.target_eos_id = 2
+    p.tokenizer.target_unk_id = 0
+    p.tokenizer.vocab_size = cls.VOCAB_SIZE
+    p.bucket_upper_bound = [cls.MAX_TOKENS]
+    p.bucket_batch_limit = [cls.BATCH_SIZE]
+    p.fixed_input_shape = True
+    return p
+
+  @classmethod
+  def Dev(cls):
+    p = cls.Train()
+    p.file_pattern = 'text:' + os.path.join(
+        cls.CORPUS_DIR, 'heldout-monolingual.tokenized.shuffled',
+        'news.en.heldout-00001*')
+    p.name = '1bwds_dev_set'
+    p.num_batcher_threads = 1
+    p.num_samples = 6206  # Number of sentences to evaluate on.
+    return p
+
+  @classmethod
+  def Test(cls):
+    p = cls.Dev()
+    p.file_pattern = 'text:' + os.path.join(
+        cls.CORPUS_DIR, 'heldout-monolingual.tokenized.shuffled',
+        'news.en.heldout-00000*')
+    p.name = '1bwds_test_set'
+    p.num_samples = 6075  # Number of sentences to evaluate on.
+    return p
+
+  @classmethod
+  def Task(cls):
+    """Language model on 1bw dataset using gpipe transformer."""
+    p = model.FixedShapeInputLanguageModel.Params()
+    p.eval.samples_per_summary = 0
+    p.name = '1bwds_wpm_level_lm'
+    p.lm = lm_layers.GPipeTransformerLm.CommonParams(
+        model_dim=cls.EMBEDDING_DIM,
+        vocab_size=cls.VOCAB_SIZE,
+        hidden_dim=cls.EMBEDDING_DIM * 4,
+        num_layers=cls.LAYERS,
+        splits=cls.SPLITS,
+        num_micro_batches=cls.NUM_MICRO_BATCHES,
+        num_heads=16,
+        softmax_max_alloc=128 * (2**20),
+        atten_dropout_prob=0.1,
+        residual_dropout_prob=0.1)
+
+    p.train.Set(
+        learning_rate=0.5,
+        optimizer=optimizer.Adam.ParamsA(),
+        clip_gradient_norm_to_value=0.0,
+        grad_norm_to_clip_to_zero=0.0,
+        lr_schedule=schedule.TransformerLearningRateSchedule.Params().Set(
+            warmup_steps=40000, worker_replicas=1, model_dim=cls.EMBEDDING_DIM))
+    return p

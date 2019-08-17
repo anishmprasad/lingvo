@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,8 +19,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import tensorflow as tf
-
+import lingvo.compat as tf
 from lingvo.core import base_input_generator
 from lingvo.core import base_layer
 from lingvo.core import base_model
@@ -27,9 +27,10 @@ from lingvo.core import base_model_params
 from lingvo.core import hyperparams
 from lingvo.core import multitask_model
 from lingvo.core import py_utils
+from lingvo.core import test_utils
 
 
-class MultiTaskModelTest(tf.test.TestCase):
+class MultiTaskModelTest(test_utils.TestCase):
 
   class _TestTask(base_model.BaseTask):
 
@@ -71,7 +72,7 @@ class MultiTaskModelTest(tf.test.TestCase):
     p.task_probs.Define('p0', 0.5, '')
     p.task_probs.Define('p1', 0.5, '')
 
-    model = p.cls(p)
+    model = p.Instantiate()
     self.assertEqual(model.p0.encoder, model.p1.encoder)
 
   def testSharedEncoderDecoderModel(self):
@@ -95,7 +96,7 @@ class MultiTaskModelTest(tf.test.TestCase):
     p.task_probs.Define('p0', 0.5, '')
     p.task_probs.Define('p1', 0.5, '')
 
-    model = p.cls(p)
+    model = p.Instantiate()
     self.assertEqual(model.p0.encoder, model.p1.encoder)
     self.assertEqual(model.p0.decoder, model.p1.decoder)
 
@@ -133,7 +134,7 @@ class MultiTaskModelTest(tf.test.TestCase):
     p.task_probs.Define('p0', 0.5, '')
     p.task_probs.Define('p1', 0.5, '')
 
-    model = p.cls(p)
+    model = p.Instantiate()
     all_vars = model.vars
     self.assertEqual('shared/weight/var:0', all_vars.p0.weight.name)
     self.assertEqual('shared/weight/var:0', all_vars.p1.weight.name)

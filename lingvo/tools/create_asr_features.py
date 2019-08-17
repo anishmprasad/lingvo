@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,16 +19,13 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import numpy as np
 import os
 import random
 import re
-
 import tarfile
-
-import tensorflow as tf
-
+import lingvo.compat as tf
 from lingvo.tools import audio_lib
+from six.moves import range
 
 tf.flags.DEFINE_string('input_tarball', '', 'Input .tar.gz file.')
 tf.flags.DEFINE_string('input_text', '', 'Reference text.')

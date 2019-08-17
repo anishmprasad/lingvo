@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,11 +19,11 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import numpy as np
-
-import tensorflow as tf
-
+import lingvo.compat as tf
 from lingvo.core import wpm_encoder
+import numpy as np
+from six import text_type
+from six.moves import zip
 
 tf.flags.DEFINE_string(
     'source_filepaths', '',
@@ -87,11 +88,9 @@ def _MakeTfExample(enc, src_i, src_s, tgt_i, tgt_s):
 
 
 def _Preprocess(text):
-  if not isinstance(text, unicode):
+  if not isinstance(text, text_type):
     text = text.decode('utf-8')
-  text = text.strip()
-  text = text.replace(' </s>', '')
-  return text
+  return text.strip().replace(' </s>', '')
 
 
 def _RunEncoding():
@@ -101,8 +100,8 @@ def _RunEncoding():
   src_encode_op = enc.Encode(src_txt_placeholder)
   tgt_txt_placeholder = tf.placeholder(tf.string, [])
   tgt_encode_op = enc.Encode(tgt_txt_placeholder)
-  pairs = zip(
-      FLAGS.source_filepaths.split(','), FLAGS.target_filepaths.split(','))
+  pairs = list(
+      zip(FLAGS.source_filepaths.split(','), FLAGS.target_filepaths.split(',')))
   with tf.python_io.TFRecordWriter(FLAGS.output_filepath) as outf:
     n = 0
     for p in pairs:

@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,10 +21,10 @@ from __future__ import print_function
 
 import inspect
 import re
-
+import lingvo.compat as tf
+from lingvo.core import py_utils
 import numpy as np
 from six.moves import range
-import tensorflow as tf
 
 tf.flags.DEFINE_boolean(
     'update_goldens', False,
@@ -32,12 +33,30 @@ tf.flags.DEFINE_boolean(
 FLAGS = tf.flags.FLAGS
 
 
+class TestCase(tf.test.TestCase):
+  """TestCase that performs Lingvo-specific setup."""
+
+  def setUp(self):
+    super(TestCase, self).setUp()
+    # Ensure the global_step variable is created in the default graph.
+    py_utils.GetOrCreateGlobalStepVar()
+
+  def _create_session(self, *args, **kwargs):
+    sess = super(TestCase, self)._create_session(*args, **kwargs)
+    with sess.graph.as_default():
+      # Ensure the global_step variable is created in every new session.
+      py_utils.GetOrCreateGlobalStepVar()
+    return sess
+
+
 def _ReplaceOneLineInFile(fpath, linenum, old, new):
+  """Replaces a line for the input file."""
   lines = []
   lines = open(fpath).readlines()
   assert lines[linenum] == old, (
       'Expected "%s" at line %d in file %s, but got "%s"' %
       (lines[linenum], linenum + 1, fpath, old))
+  tf.logging.info('Replacing {}:{}.'.format(fpath, linenum))
   lines[linenum] = new
   with open(fpath, 'w') as f:
     for l in lines:
@@ -73,6 +92,28 @@ def ReplaceGoldenStackAnalysis(new_float_value):
 
 
 def CompareToGoldenSingleFloat(testobj, v1, v2, *args, **kwargs):
+  """Compare golden value with real value.
+
+  When running the bazel tests with FLAGS.update_goldens to be True, this
+  function automatically updates the golden value in the test file if there is a
+  mismatch and the calling site of CompareToGoldenSingleFloat is a 1-liner. E.g.
+  Code::
+
+    test_utils.CompareToGoldenSingleFloat(self, 0.3232, input_batch.label)
+
+  works but this will not::
+
+    test_utils.CompareToGoldenSingleFloat(self,
+                                          0.3232,
+                                          input_batch.label)
+
+  Args:
+    testobj: A test object, such as tf.test.TestCase or test_utils.TestCase.
+    v1: the golden value to compare against.
+    v2: the returned value.
+    *args: extra args
+    **kwargs: extra args
+  """
   if not FLAGS.update_goldens:
     testobj.assertAllClose(v1, v2, *args, **kwargs)
   else:

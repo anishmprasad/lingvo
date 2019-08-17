@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -38,7 +39,7 @@ Usage:
 
       # bfloat16_var is now loaded from the checkpoint.
 """
-import tensorflow as tf
+import lingvo.compat as tf
 from tensorflow.python.training import saver
 
 
@@ -52,7 +53,11 @@ class Bfloat16VariableSaveable(saver.BaseSaverBuilder.SaveableObject):
       return var
 
     spec = saver.BaseSaverBuilder.SaveSpec(
-        _make_callable_var, slice_spec, name, dtype=orig_dtype)
+        _make_callable_var,
+        slice_spec,
+        name,
+        dtype=orig_dtype,
+        device=var.device)
     super(Bfloat16VariableSaveable, self).__init__(var, [spec], name)
 
   def restore(self, restored_tensors, restored_shapes):

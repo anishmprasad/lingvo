@@ -19,14 +19,14 @@ from __future__ import division
 from __future__ import print_function
 
 import shutil
-
+import lingvo.compat as tf
+from lingvo.core import test_utils
+from lingvo.tasks.image import input_generator
 import numpy as np
 from six.moves import range
-import tensorflow as tf
-from lingvo.tasks.image import input_generator
 
 
-class InputGeneratorTest(tf.test.TestCase):
+class InputGeneratorTest(test_utils.TestCase):
 
   def setUp(self):
     self._tmpdir, self.data_path = input_generator.FakeMnistData()
@@ -48,7 +48,7 @@ class InputGeneratorTest(tf.test.TestCase):
   def testMnistTrain(self):
     p = self._trainInput()
     with self.session() as sess:
-      inp = p.cls(p)
+      inp = p.Instantiate()
       inp_batch = inp.InputBatch()
       for _ in range(10):
         batch = sess.run(inp_batch)
@@ -60,7 +60,7 @@ class InputGeneratorTest(tf.test.TestCase):
   def testMnistTest(self):
     p = self._testInput()
     with self.session() as sess:
-      inp = p.cls(p)
+      inp = p.Instantiate()
       inp_batch = inp.InputBatch()
       ids = []
       for _ in range(39):
@@ -94,7 +94,7 @@ class InputGeneratorTest(tf.test.TestCase):
   def testMnistTrainRandomness(self):
     p = self._trainInput()
     with self.session() as sess:
-      inp = p.cls(p)
+      inp = p.Instantiate()
       batch = inp.InputBatch()
       epoch0 = self._GetIds(sess, p, batch.sample_ids)
       epoch1 = self._GetIds(sess, p, batch.sample_ids)

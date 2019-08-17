@@ -14,13 +14,16 @@ limitations under the License.
 ==============================================================================*/
 
 #include "lingvo/core/ops/beam_search_step_op_kernels.h"
+
+#include <cmath>
+
+#include "lingvo/core/ops/hyps.pb.h"
+#include "lingvo/core/ops/simple_vocab.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/util/work_sharder.h"
-#include "lingvo/core/ops/hyps.pb.h"
-#include "lingvo/core/ops/simple_vocab.h"
 
 namespace tensorflow {
 namespace lingvo {
@@ -76,7 +79,7 @@ bool IsDuplicateHyp(const Hyp& cur_hyp, const Hyp& other_hyp,
 
 float LogSumExp(float a, float b) {
   const float m = std::max(a, b);
-  return m + log(exp(a - m) + exp(b - m));
+  return m + std::log(std::exp(a - m) + std::exp(b - m));
 }
 
 #ifdef __AVX__
@@ -103,7 +106,8 @@ bool all_less_than(const float* p, float threshold) {
 void ComputeTopKPlusM(const std::vector<Hyp>& hyps, const Tensor& scores,
                       const int32 k, const int32 m, const int32 eos_id,
                       const int32 eoc_id, const int32 num_beams,
-                      const float valid_eos_max_logit_delta, bool is_first_step,
+                      const float valid_eos_max_logit_delta,
+                      const float local_eos_threshold, bool is_first_step,
                       bool is_last_decoder_step, const Tensor& is_last_chunk,
                       bool merge_paths, bool allow_empty_terminated_hyp,
                       std::vector<bool>* eos_in_topk, std::vector<Hyp>* top_k,
@@ -205,7 +209,8 @@ void ComputeTopKPlusM(const std::vector<Hyp>& hyps, const Tensor& scores,
                         << " toks=" << debug::IdsToStr(e.prev_ids);
                 // We move terminated hyps off of the beam.
                 if (is_last_decoder_step ||
-                    (e.global_score > eos_score_threshold)) {
+                    (e.global_score > eos_score_threshold &&
+                    e.local_score > local_eos_threshold)) {
                   (*eos_in_topk)[hyp_id] = true;
                   (*eos_hyps)[hyp_id] = e;
                   (*terminal_syms)[hyp_id] = eos_id;
@@ -261,6 +266,8 @@ class BeamSearchStepOp : public OpKernel {
     OP_REQUIRES_OK(ctx, ctx->GetAttr("num_hyps_per_beam", &num_hyps_per_beam_));
     OP_REQUIRES_OK(ctx, ctx->GetAttr("valid_eos_max_logit_delta",
                                      &valid_eos_max_logit_delta_));
+    OP_REQUIRES_OK(ctx, ctx->GetAttr("local_eos_threshold",
+                                     &local_eos_threshold_));
     OP_REQUIRES_OK(ctx, ctx->GetAttr("merge_paths", &merge_paths_));
     OP_REQUIRES_OK(ctx, ctx->GetAttr("allow_empty_terminated_hyp",
                                      &allow_empty_terminated_hyp_));
@@ -536,11 +543,13 @@ class BeamSearchStepOp : public OpKernel {
     std::vector<int32> terminal_syms;
     const bool is_last_decoder_step =
         (t == (in_hyps.dim_size(0) - 1)) && force_eos_in_last_step_;
-    ComputeTopKPlusM(hyps, scores, num_hyps_per_beam_, 0, eos_id_, eoc_id_,
-                     num_beams, valid_eos_max_logit_delta_, t == 0,
-                     is_last_decoder_step, is_last_chunk, merge_paths_,
-                     allow_empty_terminated_hyp_, &eos_in_topk, &top_k_hyps,
-                     &extra_m_hyps, &eos_hyps, &terminal_syms);
+    ComputeTopKPlusM(hyps, scores, /*k=*/num_hyps_per_beam_, /*m=*/0,
+                     /*eos_id=*/eos_id_, /*eoc_id=*/eoc_id_, num_beams,
+                     valid_eos_max_logit_delta_, local_eos_threshold_,
+                     /*is_first_step=*/t == 0, is_last_decoder_step,
+                     is_last_chunk, merge_paths_, allow_empty_terminated_hyp_,
+                     &eos_in_topk, &top_k_hyps, &extra_m_hyps, &eos_hyps,
+                     &terminal_syms);
 
     Tensor* out_best_scores = NULL;
     Tensor* out_cumulative_scores = NULL;
@@ -641,6 +650,7 @@ class BeamSearchStepOp : public OpKernel {
   float beam_size_ = 0.0;
   int num_hyps_per_beam_ = 0;
   float valid_eos_max_logit_delta_ = 0.0;
+  float local_eos_threshold_ = 0.0;
   bool merge_paths_ = false;
   bool allow_empty_terminated_hyp_ = true;
   bool ensure_full_beam_ = false;
@@ -762,8 +772,8 @@ class TopKTerminatedHypsOp : public OpKernel {
             .log()
             .sum().eval();
     const float coverage_penalty = penalty.scalar<float>()();
-    const float length_norm = pow(length + 5.0, length_normalization_) /
-                              pow(5.0, length_normalization_);
+    const float length_norm = std::pow(length + 5.0, length_normalization_) /
+                              std::pow(5.0, length_normalization_);
 
     float global_score = 0.0;
     for (const auto& score : hypothesis.scores()) {
@@ -788,7 +798,7 @@ class TopKTerminatedHypsOp : public OpKernel {
         ctx, in_src_seq_lens.dim_size(0) == num_beams,
         errors::InvalidArgument(
             "src_seq_lengths should be a 1-d Tensor of length num_beams. Got ",
-            in_src_seq_lens.dims(), " vs ", num_beams));
+            in_src_seq_lens.dim_size(0), " vs ", num_beams));
     std::vector<int32> src_seq_lengths(num_beams);
     for (int i = 0; i < num_beams; ++i) {
       src_seq_lengths[i] = in_src_seq_lens.flat<int>()(i);

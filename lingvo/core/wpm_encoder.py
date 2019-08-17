@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # -*- coding: utf-8 -*-
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
@@ -30,10 +31,9 @@ from __future__ import division
 from __future__ import print_function
 
 import sys
-
-import tensorflow as tf
-
-from lingvo.core.ops import py_x_ops
+import lingvo.compat as tf
+from lingvo.core import ops
+import six
 
 # Must be a large ID.
 NO_TOKEN = 1 << 31 - 1
@@ -58,18 +58,19 @@ class WpmEncoder(object):
     self._pieces = []
     with tf.gfile.Open(wpm_filepath, 'r') as f:
       for line in f.readlines():
-        line = line.decode('utf-8')
+        if isinstance(line, six.binary_type):
+          line = line.decode('utf-8')
         piece = line.strip().split('\t')[0]
         self._pieces.append(piece)
     self._merge_prob = merge_prob
 
   def _TokenToString(self, token):
-    return py_x_ops.vocab_id_to_token(token, vocab=self._pieces)
+    return ops.vocab_id_to_token(token, vocab=self._pieces)
 
   def _StringToToken(self, tokstr):
     return tf.where(
-        py_x_ops.token_in_vocab(tokstr, vocab=self._pieces),
-        py_x_ops.vocab_token_to_id(tokstr, vocab=self._pieces),
+        ops.token_in_vocab(tokstr, vocab=self._pieces),
+        ops.vocab_token_to_id(tokstr, vocab=self._pieces),
         tf.broadcast_to(NO_TOKEN, tf.shape(tokstr)))
 
   def _MergeTokens(self, tokens):

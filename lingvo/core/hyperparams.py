@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,8 +24,8 @@ import inspect
 import re
 import sys
 
+import lingvo.compat as tf
 import six
-import tensorflow as tf
 
 
 def _QuoteString(s):
@@ -182,12 +183,15 @@ class Params(object):
   def __dir__(self):
     return sorted(self._params.keys())
 
+  def __contains__(self, name):
+    return name in self._params
+
   def __len__(self):
     return len(self._params)
 
   # Note: This gets called by _Param.__eq__() on nested Params objects.
   def __eq__(self, other):
-    return self._params == other._params  # pylint: disable=protected-access
+    return isinstance(other, Params) and self._params == other._params  # pylint: disable=protected-access
 
   def __ne__(self, other):
     return not self == other
@@ -282,7 +286,7 @@ class Params(object):
       self
     """
     if self._immutable:
-      raise TypeError('This Params instance is immutable.')
+      raise TypeError('This Params instance is immutable: %s' % self)
     for name, value in six.iteritems(kwargs):
       # Get nested param.
       param, key = self._GetNested(name)
@@ -468,6 +472,13 @@ class Params(object):
         val = tf.as_dtype(val)
       elif isinstance(old_val, (six.string_types, six.text_type)):
         val = _UnquoteString(val)
+        if val.startswith('[') and val.endswith(']'):
+          # We may have stored a list as a string, try converting to a list.
+          # In case of ValueError - use the string as is.
+          try:
+            val = ast.literal_eval(val)
+          except ValueError:
+            pass
       elif isinstance(old_val, (list, tuple)):
         val = ast.literal_eval(val)
       elif isinstance(old_val, dict):
@@ -488,3 +499,25 @@ class Params(object):
       else:
         raise ValueError('Failed to read a parameter: %r : %r' % (key, val))
       self.Set(**{key: val})
+
+
+class InstantiableParams(Params):
+  """Params which can be instantiated.
+
+  When using InstantiableParams, callers must provide a class which supports
+  initialization using a Params instance.
+
+  This covers a common use case of Params to hold a configuration for a given
+  class.
+  """
+
+  def __init__(self, cls=None):
+    super(InstantiableParams, self).__init__()
+    self.Define('cls', cls, 'Cls that this param object is associated with.')
+
+  def Instantiate(self):
+    """Instantiate an instance that this Params is configured for."""
+    assert self.cls is not None
+
+    # The class initializer is expected to support initialization using Params.
+    return self.cls(self)

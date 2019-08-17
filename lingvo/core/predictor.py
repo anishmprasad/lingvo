@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-# pylint: disable=line-too-long
 """Predictor does inference using a saved inference graph.
 
 Example::
@@ -24,21 +24,18 @@ Example::
   pred.Load("/tmp/logdir/train/ckpt-00000000")
   [topk_hyps] = pred.Run(["topk_hyps"], src_strings=["Hello World"])
 """
-# pylint: enable=line-too-long
 
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
 import threading
-
-import six
-import tensorflow as tf
-
-from google.protobuf import text_format
-from tensorflow.core.protobuf import config_pb2
+import lingvo.compat as tf
 from lingvo.core import inference_graph_pb2
 from lingvo.core import py_utils
+import six
+
+from google.protobuf import text_format
 
 
 def LoadInferenceGraph(path):
@@ -123,7 +120,10 @@ class Predictor(object):
     """Updates self._sess with a new session."""
     sess = tf.Session(
         self._tf_master, graph=self._graph, config=py_utils.SessionConfig())
-    sess.run(self._graph.get_operation_by_name("init_all_tables"))
+    try:
+      sess.run(self._graph.get_operation_by_name("init_all_tables"))
+    except KeyError:
+      tf.logging.info("Could not find tables initializer in graph.")
     if self._device_type == "tpu":
       sess.run(self._graph.get_operation_by_name("tpu_init_op"))
     if self._checkpoint:
@@ -171,38 +171,47 @@ class Predictor(object):
     self._RunWithValidSession(self._saver.restore, checkpoint)
     self._checkpoint = checkpoint
 
-  def Run(self, fetch_keys, **kwargs):
+  def Run(self, fetch_keys, validate_fetches=True, **kwargs):
     """Runs predictor.
 
     Args:
       fetch_keys: a list of keys in the fetch dictionary to fetch.
+      validate_fetches: if True, raises a KeyError if a specified fetch is
+        invalid. If False, returns None for invalid fetches instead.
       **kwargs: a dict of inputs to feed.
 
     Returns:
       A list of predictions corresponding to the order of fetch_keys.
 
     Raises:
-      ValueError: the number of inputs does not meet requirements.
-      KeyError: a key specified in fetch_keys is invalid.
+      InvalidArgumentError: the number of inputs does not meet requirements.
+      KeyError: a feed specified in kwargs is invalid, or a fetch in fetch_keys
+        is invalid and validate_fetches is True.
     """
-    for x in fetch_keys:
-      if x not in self._fetches:
-        raise KeyError(
-            "Key %s is not in the list of available fetches. Available keys: %s"
-            % (x, list(self._fetches.keys())))
-    fetches = [self._fetches[x] for x in fetch_keys]
+    if validate_fetches:
+      for x in fetch_keys:
+        if x not in self._fetches:
+          raise KeyError(
+              "%s is not in the list of available fetches. Available keys: %s" %
+              (x, list(self._fetches.keys())))
+    valid_fetch_idxs, valid_fetches = zip(*[(i, self._fetches[k])
+                                            for i, k in enumerate(fetch_keys)
+                                            if k in self._fetches.keys()])
 
     for k in kwargs:
       if k not in self._feeds:
         raise KeyError(
-            """kwarg %s is not in the list of available feeds. Available kwargs:
-             %s""" % (k, list(self._feeds.keys())))
+            "%s is not in the list of available feeds. Available keys: %s" %
+            (k, list(self._feeds.keys())))
     feeds = {self._feeds[k]: v for k, v in six.iteritems(kwargs)}
 
-    run_options = config_pb2.RunOptions(
-        report_tensor_allocations_upon_oom=False)
-    return self._RunWithValidSession(
-        tf.Session.run, fetches, feed_dict=feeds, options=run_options)
+    run_options = tf.RunOptions(report_tensor_allocations_upon_oom=False)
+    fetched_results = self._RunWithValidSession(
+        tf.Session.run, valid_fetches, feed_dict=feeds, options=run_options)
+    results = [None] * len(fetch_keys)
+    for i, fetch in zip(valid_fetch_idxs, fetched_results):
+      results[i] = fetch
+    return results
 
 
 def main(_):

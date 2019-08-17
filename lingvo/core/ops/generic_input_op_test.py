@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,18 +22,20 @@ from __future__ import print_function
 import collections
 import os
 import pickle
-
+from lingvo.core import generic_input
+from lingvo.core import py_utils
+from lingvo.core import test_utils
 import numpy as np
+import six
 from six.moves import range
 
 import tensorflow as tf
-from lingvo.core.ops import py_x_ops
 
 
-class GenericInputOpTest(tf.test.TestCase):
+class GenericInputOpTest(test_utils.TestCase):
 
   def get_test_input(self, path, **kwargs):
-    return py_x_ops.generic_input(
+    return generic_input.GenericInput(
         file_pattern='tfrecord:' + path,
         file_random_seed=0,
         file_buffer_size=32,
@@ -41,11 +44,17 @@ class GenericInputOpTest(tf.test.TestCase):
         **kwargs)
 
   def testBasic(self):
+    self._testBasic(use_nested_map=False)
+
+  def testNestedMap(self):
+    self._testBasic(use_nested_map=True)
+
+  def _testBasic(self, use_nested_map):
     # Generate a test file w/ 100 records.
     tmp = os.path.join(tf.test.get_temp_dir(), 'basic')
     with tf.python_io.TFRecordWriter(tmp) as w:
       for i in range(100):
-        w.write('%08d' % i)
+        w.write(('%08d' % i).encode('utf-8'))
 
     g = tf.Graph()
     with g.as_default():
@@ -58,12 +67,21 @@ class GenericInputOpTest(tf.test.TestCase):
       # A record processor written in TF graph.
       def _process(record):
         num, = tf.py_func(str_to_num, [record], [tf.float32])
-        return record, tf.stack([num, tf.square(num)]), tf.to_int32(1)
+        num = tf.stack([num, tf.square(num)])
+        if use_nested_map:
+          return py_utils.NestedMap(record=record, num=num), 1
+        else:
+          return [record, num], 1
 
       # Samples random records from the data files and processes them
       # to generate batches.
-      strs, vals = self.get_test_input(
+      inputs, _ = self.get_test_input(
           tmp, bucket_upper_bound=[1], processor=_process)
+      if use_nested_map:
+        input_map = inputs
+        strs, vals = input_map.record, input_map.num
+      else:
+        strs, vals = inputs
 
     with self.session(graph=g) as sess:
       record_seen = set()
@@ -75,7 +93,7 @@ class GenericInputOpTest(tf.test.TestCase):
         self.assertEqual(ans_vals.shape, (8, 2))
         self.assertAllEqual(np.square(ans_vals[:, 0]), ans_vals[:, 1])
       for i in range(100):
-        self.assertTrue('%08d' % i in record_seen)
+        self.assertIn(('%08d' % i).encode('utf-8'), record_seen)
 
   def testPadding(self):
     # Generate a test file w/ 50 records of different lengths.
@@ -90,11 +108,11 @@ class GenericInputOpTest(tf.test.TestCase):
       def _process(record):
         num = tf.py_func(pickle.loads, [record], tf.int32)
         bucket_key = tf.shape(num)[0]
-        return num, tf.transpose(num, [1, 0, 2]), bucket_key
+        return [num, tf.transpose(num, [1, 0, 2])], bucket_key
 
       # Samples random records from the data files and processes them
       # to generate batches.
-      vals_t, transposed_vals_t = self.get_test_input(
+      (vals_t, transposed_vals_t), _ = self.get_test_input(
           tmp,
           bucket_upper_bound=[10],
           processor=_process,
@@ -121,23 +139,13 @@ class GenericInputOpTest(tf.test.TestCase):
 class GenericInputOpWithinBatchMixingTest(GenericInputOpTest):
   # Runs all GenericInputOp tests plus some more.
 
-  def get_test_input(self, path, **kwargs):
-    return py_x_ops.generic_input(
-        file_pattern=','.join(['tfrecord:' + path, 'tfrecord:' + path]),
-        input_source_weights=[0.3, 0.7],
-        file_random_seed=0,
-        file_buffer_size=32,
-        file_parallelism=4,
-        bucket_batch_limit=[8],
-        **kwargs)
-
   def testMix(self):
     # Generate couple files.
     def generate_test_data(tag, cnt):
       tmp = os.path.join(tf.test.get_temp_dir(), tag)
       with tf.python_io.TFRecordWriter(tmp) as w:
         for i in range(cnt):
-          w.write('%s:%08d' % (tag, i))
+          w.write(('%s:%08d' % (tag, i)).encode('utf-8'))
       return tmp
 
     path1 = generate_test_data('input1', 100)
@@ -148,11 +156,11 @@ class GenericInputOpWithinBatchMixingTest(GenericInputOpTest):
     with g.as_default():
       # A record processor written in TF graph.
       def _process(record):
-        return record, record, tf.to_int32(1)
+        return [record, record], 1
 
       # Samples random records from the data files and processes them
       # to generate batches.
-      strs, vals = py_x_ops.generic_input(
+      (strs, vals), buckets = generic_input.GenericInput(
           file_pattern=','.join(
               ['tfrecord:' + path1, 'tfrecord:' + path2, 'tfrecord:' + path3]),
           input_source_weights=[0.2, 0.3, 0.5],
@@ -167,18 +175,19 @@ class GenericInputOpWithinBatchMixingTest(GenericInputOpTest):
       tags_count = collections.defaultdict(int)
       total_count = 10000
       for _ in range(total_count):
-        ans_strs, ans_vals = sess.run([strs, vals])
+        ans_strs, ans_vals, ans_buckets = sess.run([strs, vals, buckets])
         for s in ans_strs:
-          tags_count[s.split(':')[0]] += 1
+          tags_count[s.split(b':')[0]] += 1
         self.assertEqual(ans_strs.shape, (8,))
         self.assertEqual(ans_vals.shape, (8,))
+        self.assertAllEqual(ans_buckets, [1] * 8)
       self.assertEqual(sum(tags_count.values()), total_count * 8)
       mix_ratios = {}
-      for k, v in tags_count.iteritems():
+      for k, v in six.iteritems(tags_count):
         mix_ratios[k] = float(v) / total_count / 8
-      self.assertAlmostEqual(mix_ratios['input1'], 0.2, delta=0.01)
-      self.assertAlmostEqual(mix_ratios['input2'], 0.3, delta=0.01)
-      self.assertAlmostEqual(mix_ratios['input3'], 0.5, delta=0.01)
+      self.assertAlmostEqual(mix_ratios[b'input1'], 0.2, delta=0.01)
+      self.assertAlmostEqual(mix_ratios[b'input2'], 0.3, delta=0.01)
+      self.assertAlmostEqual(mix_ratios[b'input3'], 0.5, delta=0.01)
 
 
 if __name__ == '__main__':

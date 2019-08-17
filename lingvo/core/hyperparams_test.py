@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,11 +19,10 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import os
-import re
-
-import tensorflow as tf
+import lingvo.compat as tf
 from lingvo.core import hyperparams as _params
+from lingvo.core import test_utils
+from six.moves import zip
 
 FLAGS = tf.flags.FLAGS
 
@@ -37,7 +37,7 @@ class TestClass2(object):
   pass
 
 
-class ParamsTest(tf.test.TestCase):
+class ParamsTest(test_utils.TestCase):
 
   def testEquals(self):
     params1 = _params.Params()
@@ -62,6 +62,9 @@ class ParamsTest(tf.test.TestCase):
     self.assertFalse(params1 == params2)
     params2.third.fourth = 'x'
     self.assertTrue(params1 == params2)
+    # Comparing params to non-param instances.
+    self.assertFalse(params1 == 3)
+    self.assertFalse(3 == params1)
 
   def testDeepCopy(self):
     inner = _params.Params()
@@ -100,6 +103,8 @@ class ParamsTest(tf.test.TestCase):
     p.Define('foo', 1, '')
     self.assertEqual(p.foo, 1)
     self.assertEqual(p.Get('foo'), 1)
+    self.assertIn('foo', p)
+    self.assertNotIn('bar', p)
     p.Set(foo=2)
     self.assertEqual(p.foo, 2)
     self.assertEqual(p.Get('foo'), 2)
@@ -107,6 +112,8 @@ class ParamsTest(tf.test.TestCase):
     self.assertEqual(p.foo, 3)
     self.assertEqual(p.Get('foo'), 3)
     p.Delete('foo')
+    self.assertNotIn('foo', p)
+    self.assertNotIn('bar', p)
     self.assertRaisesRegexp(AttributeError, 'foo', lambda: p.foo)
     self.assertRaisesRegexp(AttributeError, 'foo', p.Get, 'foo')
 
@@ -349,6 +356,14 @@ escaping_single : 'In "quotes"'
     self.assertEqual(p.end_escape_quote, '""Split\'\nLine')
     self.assertEqual(p.escaping_single, 'In "quotes"')
     self.assertEqual(p.escaping_double, 'In \\\'quotes\'')
+
+  def testFromToText(self):
+    p = _params.Params()
+    p.Define('activation', 'RELU', 'Can be a string or a list of strings.')
+    np = p.Copy()
+    p.Set(activation=['RELU', 'NONE'])
+    np.FromText(p.ToText())
+    self.assertEqual(np.activation, ['RELU', 'NONE'])
 
 
 if __name__ == '__main__':

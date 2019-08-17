@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,14 +18,13 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import six
-import tensorflow as tf
-
+import lingvo.compat as tf
 from lingvo.core import base_input_generator
 from lingvo.core import base_layer
+from lingvo.core import generic_input
 from lingvo.core import py_utils
 from lingvo.core import tokenizers
-from lingvo.core.ops import py_x_ops
+import six
 
 
 class NmtInput(base_input_generator.BaseSequenceInputGenerator):
@@ -64,9 +64,9 @@ class NmtInput(base_input_generator.BaseSequenceInputGenerator):
           tf.maximum(
               tf.reduce_sum(1.0 - features['source_padding']),
               tf.reduce_sum(1.0 - features['target_padding'])))
-      return [features[k] for k, _ in outputs] + [bucket_key]
+      return [features[k] for k, _ in outputs], bucket_key
 
-    return py_x_ops.generic_input(
+    return generic_input.GenericInput(
         file_pattern=file_pattern,
         processor=Proc,
         dynamic_padding_dimensions=[0] * 6,
@@ -81,7 +81,8 @@ class NmtInput(base_input_generator.BaseSequenceInputGenerator):
     self.natural_order_model = p.natural_order_model
 
     (self._src_ids, self._src_paddings, self._tgt_ids, self._tgt_paddings,
-     self._tgt_labels, self._tgt_weights) = self._BuildDataSource()
+     self._tgt_labels,
+     self._tgt_weights), self._bucket_keys = self._BuildDataSource()
 
     if p.pad_to_max_seq_length:
       assert p.source_max_length
@@ -116,6 +117,8 @@ class NmtInput(base_input_generator.BaseSequenceInputGenerator):
 
   def InputBatch(self):
     ret = py_utils.NestedMap()
+
+    ret.bucket_keys = self._bucket_keys
 
     ret.src = py_utils.NestedMap()
     ret.src.ids = tf.cast(self._src_ids, dtype=tf.int32)

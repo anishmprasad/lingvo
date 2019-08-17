@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,16 +19,16 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import lingvo.compat as tf
+from lingvo.core import cluster_factory
+from lingvo.core import py_utils
+from lingvo.core import test_utils
 import numpy as np
 from six.moves import range
 from six.moves import zip
-import tensorflow as tf
-
-from lingvo.core import cluster_factory
-from lingvo.core import py_utils
 
 
-class ClusterTest(tf.test.TestCase):
+class ClusterTest(test_utils.TestCase):
 
   def testDefaultParams(self):
     p = cluster_factory.Cluster.Params()
@@ -239,6 +240,28 @@ class ClusterTest(tf.test.TestCase):
         c._MakeDeviceString(
             job_name='/job:trainer', task_id=0, device_name='CPU', device_id=0))
 
+  def testDeviceListOneRepliaCpu(self):
+    p = cluster_factory.Cluster.Params()
+    p.mode = 'async'
+    p.job = 'trainer'
+    p.worker.cpus_per_replica = 2
+    c = cluster_factory.Cluster(p)
+    cpu_devices = c.available_devices
+    expected_cpu_devices = [[
+        c._MakeDeviceString(
+            job_name='/job:localhost',
+            task_id=0,
+            device_name='CPU',
+            device_id=0),
+        c._MakeDeviceString(
+            job_name='/job:localhost',
+            task_id=0,
+            device_name='CPU',
+            device_id=1),
+    ]]
+    print(expected_cpu_devices)
+    self.assertAllEqual(cpu_devices, expected_cpu_devices)
+
   def testDeviceListOneReplicaGpu(self):
     p = cluster_factory.Cluster.Params()
     p.mode = 'async'
@@ -283,6 +306,17 @@ class ClusterTest(tf.test.TestCase):
     ]]
     self.assertAllEqual(gpu_devices, expected_gpu_devices)
 
+    # Compute the total number of worker devices for a multi
+    # replica setup.
+    self.assertEqual(4, c.total_worker_devices)
+
+    # Even when the job is different, we still look at the worker
+    # information.
+    p.job = 'controller'
+    p.task = 0
+    c = cluster_factory.Cluster(p)
+    self.assertEqual(4, c.total_worker_devices)
+
   def testDeviceListMultiReplicaSyncSgd(self):
     p = cluster_factory.Cluster.Params()
     p.mode = 'sync'
@@ -320,7 +354,9 @@ class ClusterTest(tf.test.TestCase):
   def testInputDevice(self):
     p = cluster_factory.Cluster.Params()
     p.mode = 'sync'
-    p.job = 'trainer_client'
+    p.job = 'decoder'
+    p.decoder.replicas = 1
+    p.task = 0
     p.input.name = '/job:input'
     p.input.replicas = 1
     c = cluster_factory.Cluster(p)
@@ -328,6 +364,14 @@ class ClusterTest(tf.test.TestCase):
     expected_device = c._MakeDeviceString(
         job_name='/job:input', task_id=0, device_name='CPU', device_id=0)
     self.assertEqual(input_device, expected_device)
+
+  def testInputTargets(self):
+    p = cluster_factory.Cluster.Params()
+    p.input.name = '/job:input'
+    p.input.replicas = 2
+    p.input.targets = '10.100.1.1:10001,10.100.1.2:10002'
+    c = cluster_factory.Cluster(p)
+    self.assertEqual(c.input_targets, ['10.100.1.1:10001', '10.100.1.2:10002'])
 
   def testWorkerDeviceInModelSplitSync(self):
     p = cluster_factory.Cluster.Params()

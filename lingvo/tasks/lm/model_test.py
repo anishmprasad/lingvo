@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,18 +20,16 @@ from __future__ import division
 from __future__ import print_function
 
 import os
-
-from six.moves import range
-
-import tensorflow as tf
+import lingvo.compat as tf
 from lingvo.core import test_helper
 from lingvo.core import test_utils
 from lingvo.core import tokenizers
 from lingvo.tasks.lm import input_generator
 from lingvo.tasks.lm import model
+from six.moves import range
 
 
-class ModelTest(tf.test.TestCase):
+class ModelTest(test_utils.TestCase):
 
   def _InputParams(self, for_training):
     p = input_generator.LmInput.Params()
@@ -71,7 +70,7 @@ class ModelTest(tf.test.TestCase):
     p.input = self._InputParams(for_training=False)
 
     with self.session(use_gpu=False) as sess:
-      mdl = p.cls(p)
+      mdl = p.Instantiate()
       mdl.FPropDefaultTheta()
       loss = mdl.eval_metrics['loss'][0]
       logp = mdl.eval_metrics['log_pplx'][0]
@@ -93,7 +92,7 @@ class ModelTest(tf.test.TestCase):
     tp.learning_rate = 3e-3
 
     with self.session() as sess:
-      mdl = p.cls(p)
+      mdl = p.Instantiate()
       mdl.FPropDefaultTheta()
       mdl.BProp()
       loss = mdl.eval_metrics['loss'][0]
@@ -114,7 +113,7 @@ class ModelTest(tf.test.TestCase):
     tf.logging.info('Params: %s', p.ToText())
 
     with self.session(use_gpu=False) as sess:
-      mdl = p.cls(p)
+      mdl = p.Instantiate()
       subgraphs = mdl.Inference()
       self.assertTrue('default' in subgraphs)
       fetches, feeds = subgraphs['default']
@@ -144,7 +143,7 @@ class ModelTest(tf.test.TestCase):
     tf.logging.info('Params: %s', p.ToText())
 
     with self.session(use_gpu=False) as sess:
-      mdl = p.cls(p)
+      mdl = p.Instantiate()
       subgraphs = mdl.Inference()
       self.assertTrue('default' in subgraphs)
       fetches, feeds = subgraphs['default']
@@ -161,7 +160,8 @@ class ModelTest(tf.test.TestCase):
       self.assertEqual(vals['log_pplx_per_token'].shape, (3, 5))
       self.assertEqual(vals['paddings'].shape, (3, 5))
       expected_tokens_from_labels = [
-          '<UNK> for more <UNK> </S>', '<UNK> about </S>', 'one <UNK> will </S>'
+          b'<UNK> for more <UNK> </S>', b'<UNK> about </S>',
+          b'one <UNK> will </S>'
       ]
       self.assertListEqual(vals['tokens_from_labels'].tolist(),
                            expected_tokens_from_labels)

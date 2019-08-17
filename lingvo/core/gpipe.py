@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2019 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,11 +13,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""A recurrent model which enables pipelinng model parallelism.
+"""A recurrent model which enables pipelining model parallelism.
 
 Reference:
 'GPipe: Efficient Training of Giant Neural Networks using Pipeline Parallelism'
 https://arxiv.org/abs/1811.06965
+
+Example implementation of Transformer Language model:
+tasks/lm/layers.GPipeTransformerLm
+
+Sample params for the one billion words task:
+tasks/lm/params/one_billion_wds.OneBWdsGPipeTransformer.
+
+More examples in machine translation, image classifications and others
+will be included.
 """
 
 from __future__ import absolute_import
@@ -24,13 +34,14 @@ from __future__ import division
 from __future__ import print_function
 
 import contextlib
-from six.moves import range
-
-import tensorflow as tf
-
+import lingvo.compat as tf
 from lingvo.core import base_layer
+from lingvo.core import builder_layers
 from lingvo.core import py_utils
 from lingvo.core import recurrent
+from lingvo.core import tshape
+from six.moves import range
+
 
 _MICRO_BATCH_STATE_NAME = 'micro_batch_state'
 _OVERWRITE_GLOBAL_STEP_COLLECTION = 'lingvo__OVERWRITE_GLOBAL_STEP_COLLECTION'
@@ -42,7 +53,7 @@ def GetOverWriteGlobalStep(graph=None):
   if len(mb_tensors) == 1:
     mb_tensor = mb_tensors[0]
   else:
-    mb_tensor = py_utils.GetOrCreateGlobalStep()
+    mb_tensor = py_utils.GetGlobalStep()
   return mb_tensor
 
 
@@ -55,27 +66,39 @@ def SetOverWriteGlobalStep(tensor, graph=None):
     graph.add_to_collection(_OVERWRITE_GLOBAL_STEP_COLLECTION, tensor)
 
 
-def GetOpSeedPair(op_seed=None):
+def GenerateStepSeedPair(p, unused_global_step=None, op_seed=None):
+  """Override py_utils.GenerateStepSeedPair to use GetOverWriteGlobalStep."""
+  seed_dtype = tf.int32 if py_utils.use_tpu() else tf.int64
+  if p.is_inference and p.random_seed is None:
+    # Unlike tf.random*, stateless random ops are completely determined by the
+    # passed-in seeds. This means at inference time the same inputs will produce
+    # the same outputs, even if the model is supposed to have randomness such as
+    # dropout during inference. We inject additional randomness only during
+    # inference if the graph is exported with random_seed=None as a workaround.
+    return tf.random_uniform([2], maxval=seed_dtype.max, dtype=seed_dtype)
+
   with tf.name_scope('op_seed') as scope:
-    mb_tensor = GetOverWriteGlobalStep()
-    seeds = tf.stack(
-        [tf.cast(mb_tensor, tf.int32),
-         py_utils.GenerateSeedFromName(scope)])
+    global_step = tf.cast(GetOverWriteGlobalStep(), seed_dtype)
+    step_seed = tf.cast(py_utils.GenerateSeedFromName(scope), seed_dtype)
+    seeds = tf.stack([global_step, step_seed])
+
+    if p.random_seed is not None:
+      seeds += p.random_seed
     if op_seed is not None:
       seeds += op_seed
     return seeds
 
 
 @contextlib.contextmanager
-def CellFnFropOpReplacementWrapper():
+def CellFnFPropOpReplacementWrapper():
   """Hacks to replace certain unwanted tensorflow ops."""
   # TODO(zhifengc/huangyp): Consider implementing assert_equal
   # op replacement for lingvo. As assert_equal doesn't support String on GPUs.
   # Hack to replace tf.assert_equal
   saved_assert_equal = tf.assert_equal
-  # Hack to replace GetOpSeedPair since global_step is not available
+  # Hack to replace GenerateStepSeedPair since global_step is not available
   # in temp graph created by optional.while.
-  saved_get_op_seed = py_utils.GetOpSeedPair
+  saved_get_op_seed = py_utils.GenerateStepSeedPair
 
   # pylint: disable=unused-argument
   def NoOP(*args, **kwargs):
@@ -83,12 +106,12 @@ def CellFnFropOpReplacementWrapper():
 
   # pylint: enable=unused-argument
   tf.assert_equal = NoOP  # Make assert_equal a no op.
-  py_utils.GetOpSeedPair = GetOpSeedPair
+  py_utils.GenerateStepSeedPair = GenerateStepSeedPair
 
   yield
 
   tf.assert_equal = saved_assert_equal
-  py_utils.GetOpSeedPair = saved_get_op_seed
+  py_utils.GenerateStepSeedPair = saved_get_op_seed
 
 
 def _ToTuple(x):
@@ -100,12 +123,7 @@ class FeatureExtractionLayer(base_layer.BaseLayer):
 
   FeatureExtractionLayer is a layer which connects a few layers in a sequence.
   It is also capable of fetching and forwarding activation endpoints.
-  # TODO(huangyp): Allow keyworded argument dict in FProp.
-
-  Args:
-    fetch_activation_layers: names of fetch layers that extra activations.
-    num_activation_inputs: # of activations forwarded from previous layers.
-    num_activation_outputs: # of activations forwarded to next layers.
+  # TODO(huangyp): Make it a sublayer of builder_layers.SequentialLayer
   """
 
   @classmethod
@@ -132,9 +150,8 @@ class FeatureExtractionLayer(base_layer.BaseLayer):
     for sub in p.sub:
       assert sub.name
       sub.name = p.variable_name_prefix + sub.name
-      child = sub.cls(self.CopyBaseParams(p, sub.Copy()))
-      self.AddChild(sub.name, child)
-      self._seq.append((sub.name, child))
+      self.CreateChild(sub.name, sub)
+      self._seq.append((sub.name, self.children[sub.name]))
 
   def FProp(self, theta, *args):
     p = self.params
@@ -174,6 +191,78 @@ class FeatureExtractionLayer(base_layer.BaseLayer):
     return py_utils.NestedMap(flops=total, out_shapes=seq_args + extra_args)
 
 
+def PartitionSequentialLayers(params, num_partitions, *shapes):
+  r"""Partition a layer composed of sequential layers.
+
+  This routine strives to partition layers so that each partition costs roughly
+  the same flops given the input shapes.
+
+  Args:
+    params: A layer param or a list of layer param.
+    num_partitions: The desired number of partitions.
+    *shapes: A tuple of tshape.Shape representing input tensors to the first
+      layer.
+
+  Returns:
+    A list of FeatureExtractionLayer params.
+  """
+
+  # Recursively concatenate SequentialLayer into a list.
+  def FlattenSeq(p):
+    if isinstance(p, list):
+      return p
+    if p.cls not in [builder_layers.SequentialLayer, FeatureExtractionLayer]:
+      return [p.Copy()]
+    subs = []
+    for _ in range(p.repeat):
+      for s in p.sub:
+        subs += FlattenSeq(s)
+    return subs
+
+  subs = FlattenSeq(params)
+
+  assert len(shapes) == 1
+  tf.logging.info('num_partitions: {} input_shape: {}'.format(
+      num_partitions, shapes[0]))
+
+  # Computes the estimate cost for each sub layer.
+  total, histo, output_shapes = 0, [], []
+  for i, s in enumerate(subs):
+    s.name = 'cell_%03d' % i
+    meta = s.cls.FPropMeta(s, *shapes)
+    total += meta.flops
+    histo.append(total)
+    output_shapes.append(meta.out_shapes)
+    shapes = meta.out_shapes
+  tf.logging.vlog(1, 'len %d histogram = %s', len(subs), histo)
+
+  # Computes the normalized cumulative histogram of the layer's cost.
+  histo_pct = [float(x / total) for x in histo]
+  tf.logging.vlog(1, 'cost pct = %s', histo_pct)
+
+  # i-th sub layer is put into partition j, where j is roughly i-th cumulative
+  # histogram times num_partitions.
+  parts = [[] for _ in range(num_partitions)]
+  parts_cost = [0] * num_partitions
+  pre_hist_cost = 0
+  for i, s in enumerate(subs):
+    j = min(int(histo_pct[i] * num_partitions), num_partitions - 1)
+    # The boundary at parts[j] where j > 0
+    if j > 0 and not parts[j]:
+      parts_cost[j - 1] = histo_pct[i - 1] - pre_hist_cost
+      pre_hist_cost = histo_pct[i - 1]
+    parts[j].append(s)
+
+  parts_cost[num_partitions - 1] = 1.0 - pre_hist_cost
+  seqs = []
+  for i, pa in enumerate(parts):
+    tf.logging.info('Partition %d #subs %d #cost %.3f', i, len(pa),
+                    parts_cost[i])
+
+    seqs.append(FeatureExtractionLayer.Params().Set(name='d%d' % i, sub=pa))
+  return seqs
+
+
 class SeqLayer(base_layer.BaseLayer):
   """Round-robin every children cells in cell_tpl among worker devices."""
 
@@ -204,22 +293,20 @@ class SeqLayer(base_layer.BaseLayer):
     for l in p.before_tpl:
       with tf.device(before_tpl_device):
         assert l.name
-        child = l.cls(self.CopyBaseParams(p, l.Copy()))
-        self.AddChild(l.name, child)
-        self._before_layers.append((l.name, child))
+        self.CreateChild(l.name, l)
+        self._before_layers.append((l.name, self.children[l.name]))
     for i, l in enumerate(p.cell_tpl):
       with tf.device(cell_devices[i]):
         assert l.name
-        child = l.cls(self.CopyBaseParams(p, l.Copy()))
-        self.AddChild(l.name, child)
-        self._cells.append((l.name, child))
+        self.CreateChild(l.name, l)
+        self._cells.append((l.name, self.children[l.name]))
 
   def FProp(self, theta, *args):
     """Round-robin every children cells in cell_tpl among worker devices.
 
     Args:
-      theta: A NestedMap object containing weights' values of this
-          layer and its children layers.
+      theta: A NestedMap object containing weights' values of this layer and its
+        children layers.
       *args: Input args
 
     Returns:
@@ -250,6 +337,7 @@ class PipeliningLayer(SeqLayer):
     p = super(PipeliningLayer, cls).Params()
     p.Define('num_micro_batches', 1, 'Number of micro batches.')
     p.Define('batch_dim', 0, 'The batch dimension.')
+    p.Define('state_dtype', None, 'Externally specify dtype for states.')
     return p
 
   def _CalculateOutputShapes(self, input_shapes):
@@ -260,36 +348,37 @@ class PipeliningLayer(SeqLayer):
     information in StackedRecurrent.
 
     Args:
-      input_shapes: tuple of input shapes
+      input_shapes: tuple of input TensorShapes.
 
     Returns:
       Return a list of K + 1 lists of shapes where K is the number of
       partitions.
     """
+    # Converts TensorShape to tshape.Shape.
+    inputs = []
+    for x in input_shapes:
+      if x is None:
+        inputs.append(None)
+      else:
+        inputs.append(tshape.Shape(x.as_list()))
+    del input_shapes
+
     state_shapes = []
 
-    for (_, before_layer) in self._before_layers:
-      meta = before_layer.FPropMeta(before_layer.params, *input_shapes)
-      input_shapes = meta.out_shapes
+    def RecordInputShapes(tshapes):
+      shapes = []
+      for s in tshapes:
+        shapes.append(None if s is None else s.ToTensorShape().as_list())
+      state_shapes.append(shapes)
 
-    state_shape_list = []
-    for state_shape in input_shapes:
-      if state_shape is not None:
-        state_shape_list.append(state_shape.as_list())
-      else:
-        state_shape_list.append(None)
-    state_shapes.append(state_shape_list)
+    for (_, before_layer) in self._before_layers:
+      inputs = before_layer.FPropMeta(before_layer.params, *inputs).out_shapes
+    RecordInputShapes(inputs)
 
     for (_, cell) in self._cells:
-      meta = cell.FPropMeta(cell.params, *input_shapes)
-      input_shapes = meta.out_shapes
-      state_shape_list = []
-      for state_shape in input_shapes:
-        if state_shape is not None:
-          state_shape_list.append(state_shape.as_list())
-        else:
-          state_shape_list.append(None)
-      state_shapes.append(state_shape_list)
+      inputs = cell.FPropMeta(cell.params, *inputs).out_shapes
+      RecordInputShapes(inputs)
+
     return state_shapes
 
   def FProp(self, theta, *args):
@@ -321,7 +410,10 @@ class PipeliningLayer(SeqLayer):
     # Compute shapes of input and output tenors.
     input_tenors = _ToTuple(args)
     mini_batch_size = input_tenors[0].get_shape().as_list()[p.batch_dim]
-    input_dtype = input_tenors[0].dtype
+    if p.state_dtype:
+      state_dtype = p.state_dtype
+    else:
+      state_dtype = input_tenors[0].dtype
     if p.num_micro_batches > mini_batch_size:
       p.num_micro_batches = mini_batch_size
     micro_batch_size = mini_batch_size // p.num_micro_batches
@@ -343,21 +435,21 @@ class PipeliningLayer(SeqLayer):
       def CellFn(theta, state0, inputs):
         """A cell fn is exectued inside of StackedRecurrent."""
         del state0
-        frop_inputs = []
+        fprop_inputs = []
         for input_idx in range(len(state_shapes[i])):
           name = 's{}'.format(input_idx)
           if state_shapes[i][input_idx] is not None:
             inputs[name].set_shape(state_shapes[i][input_idx])
-            frop_inputs.append(inputs[name])
+            fprop_inputs.append(inputs[name])
           else:
-            frop_inputs.append(None)
+            fprop_inputs.append(None)
 
-        with CellFnFropOpReplacementWrapper():
-          tf.logging.info('cell {} input {}'.format(i, frop_inputs))
+        with CellFnFPropOpReplacementWrapper():
+          tf.logging.info('cell {} input {}'.format(i, fprop_inputs))
           mb_tensor = inputs[_MICRO_BATCH_STATE_NAME]
           SetOverWriteGlobalStep(mb_tensor)
           _, cell = self._cells[i]
-          outputs = cell.FProp(theta, *frop_inputs)
+          outputs = cell.FProp(theta, *fprop_inputs)
 
         state1 = py_utils.NestedMap()
         state1[_MICRO_BATCH_STATE_NAME] = mb_tensor
@@ -382,12 +474,12 @@ class PipeliningLayer(SeqLayer):
       cell_fns.append(GetCellFn(cell_idx))
       thetas.append(theta[cell_name])
       init_state = py_utils.NestedMap()
-      init_state[_MICRO_BATCH_STATE_NAME] = tf.cast(0, dtype=input_dtype)
+      init_state[_MICRO_BATCH_STATE_NAME] = tf.cast(0, dtype=state_dtype)
       for output_idx in range(len(state_shapes[cell_idx + 1])):
         name = 's{}'.format(output_idx)
         if state_shapes[cell_idx + 1][output_idx] is not None:
           init_state[name] = tf.zeros(
-              state_shapes[cell_idx + 1][output_idx], dtype=input_dtype)
+              state_shapes[cell_idx + 1][output_idx], dtype=state_dtype)
       init_states.append(init_state)
       devices.append(cluster.WorkerDeviceInModelSplit(cell_idx))
 
@@ -401,9 +493,9 @@ class PipeliningLayer(SeqLayer):
         previous = l.FProp(theta[name], *previous)
         previous = _ToTuple(previous)
       inputs = py_utils.NestedMap()
-      gs_tensor = py_utils.GetOrCreateGlobalStep()
+      gs_tensor = py_utils.GetGlobalStep()
       inputs[_MICRO_BATCH_STATE_NAME] = tf.stack([
-          tf.cast(gs_tensor * p.num_micro_batches + t, dtype=input_dtype)
+          tf.cast(gs_tensor * p.num_micro_batches + t, dtype=state_dtype)
           for t in range(p.num_micro_batches)
       ])
 

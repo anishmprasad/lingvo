@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,12 +19,7 @@ from __future__ import division
 from __future__ import print_function
 
 import math
-
-
-from six.moves import range
-import tensorflow as tf
-
-from lingvo.core import base_encoder
+import lingvo.compat as tf
 from lingvo.core import base_layer
 from lingvo.core import layers
 from lingvo.core import model_helper
@@ -31,12 +27,13 @@ from lingvo.core import py_utils
 from lingvo.core import rnn_cell
 from lingvo.core import summary_utils
 from lingvo.tasks.mt import layers as mt_layers
+from six.moves import range
 
 tf.flags.DEFINE_bool('transformer_encoder_truncates_inputs', False,
                      'Whether TransformerEncoder truncates inputs to max len.')
 
 
-class MTEncoderV1(base_encoder.BaseEncoder):
+class MTEncoderV1(base_layer.BaseLayer):
   """Machine translation encoder version 1."""
 
   @classmethod
@@ -54,13 +51,13 @@ class MTEncoderV1(base_encoder.BaseEncoder):
     p.Define('lstm_cell_size', 1024, 'LSTM cell size for the RNN layer.')
     p.Define('num_lstm_layers', 8, 'Number of rnn layers to create')
     p.Define('dropout_prob', 0.0, 'Prob at which we do dropout.')
-    p.Define('unidi_rnn_type', 'func', 'Options: func, native_cudnn. '
-             'func: FRNN, native_cudnn: CuDNNLSTM.')
-    p.Define(
-        'bidi_rnn_type', 'func', 'Options: func, native_cudnn. '
-        'func: BidirectionalFRNN, '
-        ' native_cudnn: BidirectionalNativeCuDNNLSTM.')
+    p.Define('unidi_rnn_type', 'func', 'Options: func. ' 'func: FRNN.')
+    p.Define('bidi_rnn_type', 'func', 'Options: func. '
+             'func: BidirectionalFRNN. ')
     p.Define('cc_schedule', None, 'Clipping cap schedule.')
+    p.Define(
+        'packed_input', False, 'If True, encoder and all layers support '
+        'multiple examples in a single sequence.')
 
     disable_vn = py_utils.VariationalNoiseParams(1.0, False, False)
     default_params_init = py_utils.WeightInit.Uniform(0.04)
@@ -145,7 +142,7 @@ class MTEncoderV1(base_encoder.BaseEncoder):
     p = self.params
     if not p.cc_schedule:
       return x
-    cap = tf.cast(self.cc_schedule.CurrentCap(theta.cc_schedule), x.dtype)
+    cap = tf.cast(self.cc_schedule.GetState(theta.cc_schedule), x.dtype)
     return tf.clip_by_value(x, -cap, cap)
 
   def FProp(self, theta, input_batch):
@@ -204,7 +201,7 @@ class MTEncoderV1(base_encoder.BaseEncoder):
           encoded=xs, padding=tf.squeeze(ps, [2]), segment_id=src_segment_id)
 
 
-class MTEncoderUniRNN(base_encoder.BaseEncoder):
+class MTEncoderUniRNN(base_layer.BaseLayer):
   """MT encoder that consists of a stack of uni-directional RNN layers."""
 
   @classmethod
@@ -219,9 +216,7 @@ class MTEncoderUniRNN(base_encoder.BaseEncoder):
     p.Define('dropout_prob', 0.0, 'Prob at which we do dropout.')
     p.Define('residual_start', 2,
              'Layer at which we start residual connections.')
-    p.Define(
-        'unidi_rnn_type', 'func', 'Options: func, native_cudnn. '
-        'func: FRNN, native_cudnn: CuDNNLSTM.')
+    p.Define('unidi_rnn_type', 'func', 'Options: func. ' 'func: FRNN.')
     p.Define('cc_schedule', None, 'Clipping cap schedule.')
 
     p.Define('is_transparent', False,
@@ -230,6 +225,9 @@ class MTEncoderUniRNN(base_encoder.BaseEncoder):
         'transparent_merger_tpl',
         layers.WeightedSumLayer.Params().Set(add_weight_summaries=True),
         'Merger op for layer outputs.')
+    p.Define(
+        'packed_input', False, 'If True, encoder and all layers support '
+        'multiple examples in a single sequence.')
 
     disable_vn = py_utils.VariationalNoiseParams(1.0, False, False)
     default_params_init = py_utils.WeightInit.Uniform(0.04)
@@ -293,16 +291,29 @@ class MTEncoderUniRNN(base_encoder.BaseEncoder):
     else:
       return x
 
-  def FProp(self, theta, input_batch):
+  def zero_state(self, theta, batch_size):
+    return py_utils.NestedMap(rnn=[
+        self.rnn[i].zero_state(theta.rnn[i], batch_size)
+        for i in range(len(self.rnn))
+    ])
+
+  def FProp(self, theta, input_batch, state0=None):
     p = self.params
     src_segment_id = None
     with tf.name_scope(p.name):
+      # Reshape to [t, b]
       inputs = py_utils.with_dependencies([
           py_utils.assert_shape_match(tf.shape(input_batch.ids), [-1, -1]),
           py_utils.assert_shape_match(
               tf.shape(input_batch.ids), tf.shape(input_batch.paddings))
       ], tf.transpose(input_batch.ids))
       paddings = tf.expand_dims(tf.transpose(input_batch.paddings), 2)
+
+      # Setup streaming states.
+      if not state0:
+        state0 = self.zero_state(theta, tf.shape(inputs)[1])
+      state1 = py_utils.NestedMap(rnn=[None] * p.num_lstm_layers)
+
       xs = self.emb.EmbLookup(theta.emb, inputs)
       xs = self.ApplyClipping(theta, xs)
       summary_utils.histogram('input_emb', xs)
@@ -312,7 +323,8 @@ class MTEncoderUniRNN(base_encoder.BaseEncoder):
       outputs_list = []
       for i in range(0, p.num_lstm_layers):
         layer = self.rnn[i]
-        ys, _ = layer.FProp(theta.rnn[i], xs, ps)
+        ys, state1.rnn[i] = layer.FProp(
+            theta.rnn[i], xs, ps, state0=state0.rnn[i])
         ys = self.dropout.FProp(theta.dropout, ys)
         if i >= p.residual_start:
           xs += ys  # Residual skip
@@ -327,10 +339,13 @@ class MTEncoderUniRNN(base_encoder.BaseEncoder):
                                            outputs_list)
 
       return py_utils.NestedMap(
-          encoded=xs, padding=tf.squeeze(ps, [2]), segment_id=src_segment_id)
+          encoded=xs,
+          padding=tf.squeeze(ps, [2]),
+          segment_id=src_segment_id,
+          state=state1)
 
 
-class MTEncoderBiRNN(base_encoder.BaseEncoder):
+class MTEncoderBiRNN(base_layer.BaseLayer):
   """MT encoder that consists of a stack of bi-directional RNN layers."""
 
   @classmethod
@@ -349,10 +364,8 @@ class MTEncoderBiRNN(base_encoder.BaseEncoder):
     p.Define('residual_start', 2,
              'Layer at which we start residual connections.')
     p.Define('encoder_out_dim', 1024, 'Depth of the encoder output.')
-    p.Define(
-        'bidi_rnn_type', 'func', 'Options: func, native_cudnn. '
-        'func: BidirectionalFRNN, '
-        ' native_cudnn: BidirectionalNativeCuDNNLSTM.')
+    p.Define('bidi_rnn_type', 'func', 'Options: func. '
+             'func: BidirectionalFRNN. ')
     p.Define('cc_schedule', None, 'Clipping cap schedule.')
 
     p.Define('is_transparent', False,
@@ -361,6 +374,9 @@ class MTEncoderBiRNN(base_encoder.BaseEncoder):
         'transparent_merger_tpl',
         layers.WeightedSumLayer.Params().Set(add_weight_summaries=True),
         'Merger op for layer outputs.')
+    p.Define(
+        'packed_input', False, 'If True, encoder and all layers support '
+        'multiple examples in a single sequence.')
 
     disable_vn = py_utils.VariationalNoiseParams(1.0, False, False)
     default_params_init = py_utils.WeightInit.Uniform(0.04)
@@ -497,7 +513,7 @@ class MTEncoderBiRNN(base_encoder.BaseEncoder):
           encoded=xs, padding=tf.squeeze(ps, [2]), segment_id=src_segment_id)
 
 
-class TransformerEncoder(base_encoder.BaseEncoder):
+class TransformerEncoder(base_layer.BaseLayer):
   """Transformer stack with sinusoidal positional embeddings and attention.
 
   Implements the encoder of 'Attention is All You Need':
@@ -530,6 +546,9 @@ class TransformerEncoder(base_encoder.BaseEncoder):
 
     p.Define('transformer_stack', mt_layers.TransformerStack.Params(),
              'TransformerStack layer params.')
+    p.Define(
+        'packed_input', False, 'If True, encoder and all layers support '
+        'multiple examples in a single sequence.')
 
     p.transformer_stack.num_transformer_layers = 6
     p.transformer_stack.transformer_tpl.tr_atten_tpl.num_attention_heads = 8
@@ -587,7 +606,10 @@ class TransformerEncoder(base_encoder.BaseEncoder):
         - padding: of shape [time, batch]
         - segment_id: [time, batch] if packed inputs are supported by the model
             (and all layers), or None otherwise.
+        - embedded_inputs: [time, batch, depth] embedded inputs tokens without
+            positional encodings.
     """
+
     p = self.params
     with tf.name_scope(p.name):
       src_segment_id = None
@@ -626,6 +648,9 @@ class TransformerEncoder(base_encoder.BaseEncoder):
                                             tf.reshape(input_ids, [-1]))
       input_embs = tf.reshape(input_embs,
                               [-1, max_time, p.token_emb.embedding_dim])
+      # [time, batch, dim]
+      orig_input_embs = tf.transpose(input_embs, [1, 0, 2])
+
       if p.packed_input:
         position_embs = self.position_emb.FPropWithPosition(
             theta.position_emb, src_segment_pos)
@@ -649,4 +674,7 @@ class TransformerEncoder(base_encoder.BaseEncoder):
     encoded, padding, segment_id = self.transformer_stack.FProp(
         theta.transformer_stack, transformer_input, paddings, src_segment_id)
     return py_utils.NestedMap(
-        encoded=encoded, padding=padding, segment_id=segment_id)
+        encoded=encoded,
+        padding=padding,
+        segment_id=segment_id,
+        embedded_inputs=orig_input_embs)

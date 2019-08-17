@@ -17,10 +17,10 @@ limitations under the License.
 #define LINGVO_CORE_OPS_INPUT_COMMON_H_
 
 #include <limits>
-#include "tensorflow/core/framework/op_kernel.h"
+
 #include "lingvo/core/ops/record_batcher.h"
 #include "lingvo/core/ops/record_yielder.h"
-#include "lingvo/core/ops/weighted_mix_record_yielder.h"
+#include "tensorflow/core/framework/op_kernel.h"
 
 namespace tensorflow {
 namespace lingvo {
@@ -30,7 +30,9 @@ namespace lingvo {
 RecordYielder* ConstructYielder(const string& file_pattern,
                                 const std::vector<float>& input_source_weights,
                                 int64 file_random_seed, int64 file_buffer_size,
-                                int64 file_parallelism);
+                                int64 file_parallelism,
+                                bool require_sequential_order,
+                                bool use_chaining);
 
 // Base class for op kernels that emit training examples.
 template <class RecordProcessorClass>
@@ -53,22 +55,29 @@ class InputOp : public OpKernel {
     GETATTR(int64, file_parallelism);
     GETATTR(Int64Vec, bucket_upper_bound);
     GETATTR(Int64Vec, bucket_batch_limit);
+    GETATTR(int64, bucket_adjust_every_n);
     GETATTR(int64, flush_every_n);
     GETATTR(int64, num_threads);
+    GETATTR(bool, require_sequential_order);
+    GETATTR(bool, use_chaining);
 #undef GETATTR
     OP_REQUIRES(
         ctx,
         std::is_sorted(bucket_upper_bound.begin(), bucket_upper_bound.end()),
         errors::InvalidArgument("Bucket_upper_bound is not sorted"));
+    if (require_sequential_order) {
+      num_threads = 1;
+    }
     LOG(INFO) << "Create RecordProcessor";
     processor_ = new RecordProcessorClass(ctx);
-    RecordYielder* yielder = CHECK_NOTNULL(
-        ConstructYielder(file_pattern, input_source_weights, file_random_seed,
-                         file_buffer_size, file_parallelism));
+    RecordYielder* yielder = CHECK_NOTNULL(ConstructYielder(
+        file_pattern, input_source_weights, file_random_seed, file_buffer_size,
+        file_parallelism, require_sequential_order, use_chaining));
     LOG(INFO) << "Create batcher";
     RecordBatcher::Options bopts;
     bopts.bucket_upper_bound = bucket_upper_bound;
     bopts.bucket_batch_limit = bucket_batch_limit;
+    bopts.bucket_adjust_every_n = bucket_adjust_every_n;
     bopts.flush_every_n = flush_every_n;
     bopts.num_threads = num_threads;
     batcher_ = new RecordBatcher(bopts, yielder, processor_);

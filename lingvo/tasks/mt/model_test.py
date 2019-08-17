@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # -*- coding: utf-8 -*-
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
@@ -19,22 +20,22 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import numpy as np
-
-from six.moves import range
-
-import tensorflow as tf
+import lingvo.compat as tf
 from lingvo.core import base_input_generator
 from lingvo.core import base_layer
 from lingvo.core import cluster_factory
-from lingvo.core import lr_schedule
 from lingvo.core import optimizer
 from lingvo.core import py_utils
+from lingvo.core import schedule
 from lingvo.core import test_helper
+from lingvo.core import test_utils
 from lingvo.tasks.mt import decoder
 from lingvo.tasks.mt import encoder
 from lingvo.tasks.mt import input_generator
 from lingvo.tasks.mt import model
+import numpy as np
+
+from six.moves import range
 
 FLAGS = tf.flags.FLAGS
 
@@ -53,7 +54,7 @@ class TestInputGenerator(base_input_generator.BaseSequenceInputGenerator):
     super(TestInputGenerator, self).__init__(params)
     self._step = 0
 
-  def InputBatchSize(self):
+  def GlobalBatchSize(self):
     if self.params.split:
       return 10 / 2
 
@@ -86,23 +87,23 @@ class TestInputGenerator(base_input_generator.BaseSequenceInputGenerator):
       tgt_weights = tf.split(tgt_weights, 2, 0)
 
       ret.src.ids = tf.cond(
-          tf.equal(tf.mod(py_utils.GetOrCreateGlobalStep(), 2), 0),
-          lambda: src_ids[0], lambda: src_ids[1])
+          tf.equal(tf.mod(py_utils.GetGlobalStep(), 2),
+                   0), lambda: src_ids[0], lambda: src_ids[1])
       ret.src.paddings = tf.cond(
-          tf.equal(tf.mod(py_utils.GetOrCreateGlobalStep(), 2), 0),
-          lambda: src_paddings[0], lambda: src_paddings[1])
+          tf.equal(tf.mod(py_utils.GetGlobalStep(), 2),
+                   0), lambda: src_paddings[0], lambda: src_paddings[1])
       ret.tgt.ids = tf.cond(
-          tf.equal(tf.mod(py_utils.GetOrCreateGlobalStep(), 2), 0),
-          lambda: tgt_ids[0], lambda: tgt_ids[1])
+          tf.equal(tf.mod(py_utils.GetGlobalStep(), 2),
+                   0), lambda: tgt_ids[0], lambda: tgt_ids[1])
       ret.tgt.labels = tf.cond(
-          tf.equal(tf.mod(py_utils.GetOrCreateGlobalStep(), 2), 0),
-          lambda: tgt_labels[0], lambda: tgt_labels[1])
+          tf.equal(tf.mod(py_utils.GetGlobalStep(), 2),
+                   0), lambda: tgt_labels[0], lambda: tgt_labels[1])
       ret.tgt.paddings = tf.cond(
-          tf.equal(tf.mod(py_utils.GetOrCreateGlobalStep(), 2), 0),
-          lambda: tgt_paddings[0], lambda: tgt_paddings[1])
+          tf.equal(tf.mod(py_utils.GetGlobalStep(), 2),
+                   0), lambda: tgt_paddings[0], lambda: tgt_paddings[1])
       ret.tgt.weights = tf.cond(
-          tf.equal(tf.mod(py_utils.GetOrCreateGlobalStep(), 2), 0),
-          lambda: tgt_weights[0], lambda: tgt_weights[1])
+          tf.equal(tf.mod(py_utils.GetGlobalStep(), 2),
+                   0), lambda: tgt_weights[0], lambda: tgt_weights[1])
     else:
       ret.src.ids = src_ids
       ret.src.paddings = src_paddings
@@ -114,7 +115,7 @@ class TestInputGenerator(base_input_generator.BaseSequenceInputGenerator):
     return ret
 
 
-class TransformerModelTest(tf.test.TestCase):
+class TransformerModelTest(test_utils.TestCase):
 
   def _InputParams(self):
     p = input_generator.NmtInput.Params()
@@ -125,8 +126,8 @@ class TransformerModelTest(tf.test.TestCase):
     p.file_pattern = 'tfrecord:' + input_file
     p.file_random_seed = 31415
     p.file_parallelism = 1
-    p.bucket_upper_bound = [20, 40]
-    p.bucket_batch_limit = [4, 8]
+    p.bucket_upper_bound = [40]
+    p.bucket_batch_limit = [8]
     p.source_max_length = 200
     p.target_max_length = 200
 
@@ -180,7 +181,7 @@ class TransformerModelTest(tf.test.TestCase):
   def testConstruction(self):
     with self.session():
       p = self._testParams()
-      mdl = p.cls(p)
+      mdl = p.Instantiate()
       print('vars = ', mdl.vars)
       flatten_vars = mdl.vars.Flatten()
       print('vars flattened = ', flatten_vars)
@@ -197,7 +198,7 @@ class TransformerModelTest(tf.test.TestCase):
       if fprop_dtype:
         p.fprop_dtype = fprop_dtype
         p.input.dtype = fprop_dtype
-      mdl = p.cls(p)
+      mdl = p.Instantiate()
       input_batch = mdl.GetInputBatch()
       mdl.FProp(mdl.theta, input_batch)
       loss = mdl.loss
@@ -208,18 +209,20 @@ class TransformerModelTest(tf.test.TestCase):
         vals += [sess.run((loss, logp))]
 
       print('actual vals = %s' % np.array_repr(np.array(vals)))
-      self.assertAllClose(
-          vals, [(189.22296, 10.368382), (282.57202, 10.369616),
-                 (142.55638, 10.367737), (139.9939, 10.369918),
-                 (293.08011, 10.374517)],
-          atol=1e-6, rtol=1e-6)
+      self.assertAllClose(vals, [
+          [233.337143, 10.370541],
+          [235.853119, 10.367168],
+          [217.87796, 10.375141],
+          [217.822205, 10.372487],
+          [159.483185, 10.37289],
+      ])
 
   def testFPropEvalMode(self):
     with self.session() as sess:
       tf.set_random_seed(_TF_RANDOM_SEED)
       p = self._testParams()
       p.is_eval = True
-      mdl = p.cls(p)
+      mdl = p.Instantiate()
       mdl.FPropDefaultTheta()
       loss = mdl.loss
       logp = mdl.eval_metrics['log_pplx'][0]
@@ -228,16 +231,19 @@ class TransformerModelTest(tf.test.TestCase):
       for _ in range(5):
         vals += [sess.run((loss, logp))]
       print('actual vals = ', vals)
-      self.assertAllClose(
-          vals, [(189.22296, 10.368382), (282.57202, 10.369616),
-                 (142.55638, 10.367737), (139.9939, 10.369918),
-                 (293.08011, 10.374517)])
+      self.assertAllClose(vals, [
+          [233.337143, 10.370541],
+          [235.853119, 10.367168],
+          [217.87796, 10.375141],
+          [217.822205, 10.372487],
+          [159.483185, 10.37289],
+      ])
 
   def testBProp(self):
     with self.session() as sess:
       tf.set_random_seed(_TF_RANDOM_SEED)
       p = self._testParams()
-      mdl = p.cls(p)
+      mdl = p.Instantiate()
       mdl.FPropDefaultTheta()
       mdl.BProp()
       loss = mdl.loss
@@ -248,9 +254,13 @@ class TransformerModelTest(tf.test.TestCase):
       for _ in range(5):
         vals += [sess.run((loss, logp, mdl.train_op))[:2]]
       print('BProp actual vals = ', vals)
-      expected_vals = [(189.22296, 10.368382), (282.54092, 10.368474),
-                       (142.48544, 10.362577), (139.91856, 10.364338),
-                       (292.86707, 10.366976)]
+      expected_vals = [
+          [233.337143, 10.370541],
+          [235.809311, 10.365245],
+          [217.793747, 10.371132],
+          [217.679932, 10.365711],
+          [159.340271, 10.363596],
+      ]
       self.assertAllClose(vals, expected_vals)
 
   def testBPropWithAccumComparison(self):
@@ -272,7 +282,7 @@ class TransformerModelTest(tf.test.TestCase):
       tp.grad_norm_to_clip_to_zero = False
       tp.optimizer = optimizer.SGD.Params()
       tp.learning_rate = 1e-2
-      tp.lr_schedule = lr_schedule.ContinuousLearningRateSchedule.Params()
+      tp.lr_schedule = schedule.ContinuousLearningRateSchedule.Params()
       for l in p.ToText().split('\n'):
         print(l)
       return p
@@ -285,16 +295,14 @@ class TransformerModelTest(tf.test.TestCase):
       p = _SetDefaults(p)
       p.train.optimizer = optimizer.Accumulator.Params().Set(
           accum_steps=2, optimizer_tpl=p.train.optimizer)
-      mdl = p.cls(p)
+      mdl = p.Instantiate()
       mdl.FPropDefaultTheta()
       mdl.BProp()
-      loss = mdl.loss
-      logp = mdl.eval_metrics['log_pplx'][0]
 
       tf.global_variables_initializer().run()
 
       for _ in range(2):
-        sess.run((py_utils.GetOrCreateGlobalStep(), loss, logp, mdl.train_op))
+        sess.run(mdl.train_op)
 
       expected = sess.run(mdl.dec.softmax.vars['weight_0'])
 
@@ -304,15 +312,13 @@ class TransformerModelTest(tf.test.TestCase):
       p.input = TestInputGenerator.Params()
       p.input.split = False
       p = _SetDefaults(p)
-      mdl = p.cls(p)
+      mdl = p.Instantiate()
       mdl.FPropDefaultTheta()
       mdl.BProp()
-      loss = mdl.loss
-      logp = mdl.eval_metrics['log_pplx'][0]
 
       tf.global_variables_initializer().run()
 
-      sess.run((py_utils.GetOrCreateGlobalStep(), loss, logp, mdl.train_op))
+      sess.run(mdl.train_op)
 
       actual = sess.run(mdl.dec.softmax.vars['weight_0'])
 
@@ -328,7 +334,7 @@ class TransformerModelTest(tf.test.TestCase):
             b * 2 / num_splits for b in p.input.bucket_batch_limit
         ]
         with cluster_factory.ForTestingWorker(gpus=num_splits):
-          mdl = p.cls(p)
+          mdl = p.Instantiate()
           metrics = mdl.FPropDefaultTheta()[0]
         tf.global_variables_initializer().run()
         return sess.run(metrics['loss'])
@@ -343,18 +349,18 @@ class TransformerModelTest(tf.test.TestCase):
       p = self._testParams()
       with cluster_factory.ForTestingWorker(
           mode='sync', job='trainer_client', gpus=5):
-        mdl = p.cls(p)
+        mdl = p.Instantiate()
         mdl.FPropDefaultTheta()
       loss = mdl.loss
       tf.global_variables_initializer().run()
       _ = sess.run(loss)
-      self.assertEqual(mdl.input_generator.scaled_bucket_batch_limit, [20, 40])
+      self.assertEqual(mdl.input_generator.scaled_bucket_batch_limit, [40])
 
   def testDecode(self):
     with self.session(use_gpu=False) as sess:
       tf.set_random_seed(93820985)
       p = self._testParams()
-      mdl = p.cls(p)
+      mdl = p.Instantiate()
       input_batch = mdl.input_generator.GetPreprocessedInputBatch()
       dec_out_dict = mdl.Decode(input_batch)
       tf.global_variables_initializer().run()
@@ -362,12 +368,12 @@ class TransformerModelTest(tf.test.TestCase):
       metrics_dict = mdl.CreateDecoderMetrics()
       key_value_pairs = mdl.PostProcessDecodeOut(dec_out, metrics_dict)
       self.assertNear(0.0, metrics_dict['corpus_bleu'].value, 1.0e-5)
-      self.assertEqual(4, len(key_value_pairs))
+      self.assertLen(key_value_pairs, 8)
       for k, v in key_value_pairs:
         self.assertIn(k, v)
 
 
-class RNMTModelTest(tf.test.TestCase):
+class RNMTModelTest(test_utils.TestCase):
 
   def _InputParams(self):
     p = input_generator.NmtInput.Params()
@@ -378,8 +384,8 @@ class RNMTModelTest(tf.test.TestCase):
     p.file_pattern = 'tfrecord:' + input_file
     p.file_random_seed = 31415
     p.file_parallelism = 1
-    p.bucket_upper_bound = [20, 40]
-    p.bucket_batch_limit = [4, 8]
+    p.bucket_upper_bound = [40]
+    p.bucket_batch_limit = [8]
     p.source_max_length = 200
     p.target_max_length = 200
 
@@ -424,7 +430,7 @@ class RNMTModelTest(tf.test.TestCase):
   def testConstruction(self):
     with self.session():
       p = self._testParams()
-      mdl = p.cls(p)
+      mdl = p.Instantiate()
       flatten_vars = mdl.vars.Flatten()
       # encoder/embedding: 1
       # encoder/lstms: 2 * (3 (forward) + 3 (backward))
@@ -442,7 +448,7 @@ class RNMTModelTest(tf.test.TestCase):
     with self.session() as sess:
       tf.set_random_seed(_TF_RANDOM_SEED)
       p = self._testParams()
-      mdl = p.cls(p)
+      mdl = p.Instantiate()
       mdl.FPropDefaultTheta()
       loss = mdl.loss
       logp = mdl.eval_metrics['log_pplx'][0]
@@ -450,16 +456,20 @@ class RNMTModelTest(tf.test.TestCase):
       vals = []
       for _ in range(5):
         vals += [sess.run((loss, logp))]
-      self.assertAllClose(vals, [(189.31619, 10.37349), (282.67767, 10.373495),
-                                 (142.6355, 10.37349), (140.04213, 10.373491),
-                                 (293.05115, 10.373494)])
+      self.assertAllClose(vals, [
+          [233.403564, 10.373495],
+          [235.996948, 10.373494],
+          [217.843338, 10.373493],
+          [217.843338, 10.373491],
+          [159.492432, 10.373494],
+      ])
 
   def testFPropEvalMode(self):
     with self.session() as sess:
       tf.set_random_seed(_TF_RANDOM_SEED)
       p = self._testParams()
       p.is_eval = True
-      mdl = p.cls(p)
+      mdl = p.Instantiate()
       mdl.FPropDefaultTheta()
       loss = mdl.loss
       logp = mdl.eval_metrics['log_pplx'][0]
@@ -467,15 +477,19 @@ class RNMTModelTest(tf.test.TestCase):
       vals = []
       for _ in range(5):
         vals += [sess.run((loss, logp))]
-      self.assertAllClose(vals, [(189.31619, 10.37349), (282.67767, 10.373495),
-                                 (142.6355, 10.37349), (140.04213, 10.373491),
-                                 (293.05115, 10.373494)])
+      self.assertAllClose(vals, [
+          [233.403564, 10.373495],
+          [235.996948, 10.373494],
+          [217.843338, 10.373493],
+          [217.843338, 10.373491],
+          [159.492432, 10.373494],
+      ])
 
   def testBProp(self):
     with self.session() as sess:
       tf.set_random_seed(_TF_RANDOM_SEED)
       p = self._testParams()
-      mdl = p.cls(p)
+      mdl = p.Instantiate()
       mdl.FPropDefaultTheta()
       mdl.BProp()
       loss = mdl.loss
@@ -485,9 +499,13 @@ class RNMTModelTest(tf.test.TestCase):
       vals = []
       for _ in range(5):
         vals += [sess.run((loss, logp, mdl.train_op))[:2]]
-      expected_vals = [(189.31619, 10.37349), (269.60449, 9.8937426),
-                       (119.08695, 8.6608696), (163.95612, 12.144897),
-                       (402.47745, 14.246991)]
+      expected_vals = [
+          [233.403564, 10.373495],
+          [219.442184, 9.645809],
+          [181.665314, 8.650729],
+          [185.266647, 8.822222],
+          [157.343857, 10.233747],
+      ]
       self.assertAllClose(vals, expected_vals, atol=1e-3)
 
   def testDecode(self):
@@ -495,7 +513,7 @@ class RNMTModelTest(tf.test.TestCase):
       tf.set_random_seed(93820985)
       p = self._testParams()
       p.is_eval = True
-      mdl = p.cls(p)
+      mdl = p.Instantiate()
       input_batch = mdl.input_generator.GetPreprocessedInputBatch()
       dec_out_dict = mdl.Decode(input_batch)
       tf.global_variables_initializer().run()
@@ -503,7 +521,7 @@ class RNMTModelTest(tf.test.TestCase):
       metrics_dict = mdl.CreateDecoderMetrics()
       key_value_pairs = mdl.PostProcessDecodeOut(dec_out, metrics_dict)
       self.assertNear(0.0, metrics_dict['corpus_bleu'].value, 1.0e-5)
-      self.assertEqual(4, len(key_value_pairs))
+      self.assertLen(key_value_pairs, 8)
       for k, v in key_value_pairs:
         self.assertIn(k, v)
 
@@ -517,7 +535,7 @@ class RNMTModelTest(tf.test.TestCase):
             b * 2 / num_splits for b in p.input.bucket_batch_limit
         ]
         with cluster_factory.ForTestingWorker(gpus=num_splits):
-          mdl = p.cls(p)
+          mdl = p.Instantiate()
           metrics = mdl.FPropDefaultTheta()[0]
         tf.global_variables_initializer().run()
         return sess.run(metrics['loss'])
@@ -538,13 +556,161 @@ class RNMTModelTest(tf.test.TestCase):
       cluster_params.input.name = '/job:localhost'
       cluster_params.input.replicas = 1
       cluster_params.input.gpus_per_replica = 0
-      with cluster_params.cls(cluster_params):
-        mdl = p.cls(p)
+      with cluster_params.Instantiate():
+        mdl = p.Instantiate()
         mdl.FPropDefaultTheta()
       loss = mdl.loss
       tf.global_variables_initializer().run()
       _ = sess.run(loss)
-      self.assertEqual(mdl.input_generator.scaled_bucket_batch_limit, [20, 40])
+      self.assertEqual(mdl.input_generator.scaled_bucket_batch_limit, [40])
+
+
+class InsertionModelTest(test_utils.TestCase):
+
+  def _InputParams(self):
+    p = input_generator.NmtInput.Params()
+    input_file = test_helper.test_src_dir_path(
+        'tasks/mt/testdata/wmt14_ende_wpm_32k_test.tfrecord')
+    vocab_file = test_helper.test_src_dir_path(
+        'tasks/mt/testdata/wmt14_ende_wpm_32k_test.vocab')
+    p.file_pattern = 'tfrecord:' + input_file
+    p.file_random_seed = 31415
+    p.file_parallelism = 1
+    p.bucket_upper_bound = [40]
+    p.bucket_batch_limit = [8]
+    p.source_max_length = 200
+    p.target_max_length = 200
+
+    p.tokenizer.token_vocab_filepath = vocab_file
+    p.tokenizer.vocab_size = 32000
+    return p
+
+  def _DecoderParams(self):
+    p = decoder.InsertionDecoder.Params()
+    p.name = 'decoder'
+    return p
+
+  def _testParams(self):
+    p = model.InsertionModel.Params()
+    p.name = 'insertion'
+    p.input = self._InputParams()
+    p.decoder = self._DecoderParams()
+    return p
+
+  def testSampleCanvasAndTargets(self):
+    with self.session() as sess:
+      tf.set_random_seed(_TF_RANDOM_SEED)
+
+      x = np.asarray([[10, 11, 12, 13, 14, 15, 2], [10, 11, 12, 13, 14, 15, 2],
+                      [2, 0, 0, 0, 0, 0, 0], [10, 11, 12, 13, 14, 2, 0]],
+                     np.int32)
+      x_paddings = np.asarray([[0, 0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0, 0],
+                               [0, 1, 1, 1, 1, 1, 1], [0, 0, 0, 0, 0, 0, 1]],
+                              np.float32)
+
+      p = self._testParams()
+      mdl = p.Instantiate()
+
+      descriptor = mdl._SampleCanvasAndTargets(
+          tf.convert_to_tensor(x), tf.convert_to_tensor(x_paddings))
+
+      canvas, canvas_paddings, target_indices, target_weights = sess.run([
+          descriptor.canvas, descriptor.canvas_paddings,
+          descriptor.target_indices, descriptor.target_weights
+      ])
+
+      canvas_gold = np.asarray([[11, 13, 14, 15, 2], [10, 12, 13, 15, 2],
+                                [2, 0, 0, 0, 0], [11, 12, 13, 2, 0]], np.int32)
+      canvas_paddings_gold = np.asarray(
+          [[0, 0, 0, 0, 0], [0, 0, 0, 0, 0], [0, 1, 1, 1, 1], [0, 0, 0, 0, 1]],
+          np.float32)
+      target_indices_gold = np.asarray(
+          [[0, 0, 10], [0, 0, 2], [0, 1, 12], [0, 1, 2], [0, 2, 2], [0, 3, 2],
+           [0, 4, 2], [1, 0, 2], [1, 1, 11], [1, 1, 2], [1, 2, 2], [1, 3, 14],
+           [1, 3, 2], [1, 4, 2], [2, 0, 2], [3, 0, 10], [3, 0, 2], [3, 1, 2],
+           [3, 2, 2], [3, 3, 14], [3, 3, 2]], np.int32)
+      target_weights_gold = np.asarray([1, 0, 1, 0, 1, 1, 1] +
+                                       [1, 1, 0, 1, 1, 0, 1] + [1] +
+                                       [1, 0, 1, 1, 1, 0], np.float32)
+      target_weights_gold = np.reshape(target_weights_gold,
+                                       [target_weights_gold.shape[0], 1])
+
+      self.assertAllEqual(canvas, canvas_gold)
+      self.assertAllEqual(canvas_paddings, canvas_paddings_gold)
+      self.assertAllEqual(target_indices, target_indices_gold)
+      self.assertAllEqual(target_weights, target_weights_gold)
+
+  def testCreateCanvasAndTargets(self):
+    with self.session() as sess:
+      tf.set_random_seed(_TF_RANDOM_SEED)
+      batch = py_utils.NestedMap(
+          src=py_utils.NestedMap(
+              ids=tf.convert_to_tensor(
+                  np.asarray([
+                      [10, 11, 12, 14, 2, 0],
+                      [20, 21, 22, 24, 25, 2],
+                  ], np.int32)),
+              paddings=tf.convert_to_tensor(
+                  np.asarray([[0, 0, 0, 0, 0, 1], [0, 0, 0, 0, 0, 0]],
+                             np.float32))),
+          tgt=py_utils.NestedMap(
+              ids=tf.convert_to_tensor(
+                  np.asarray([[100, 101, 102, 104, 2, 0],
+                              [200, 201, 202, 204, 205, 2]], np.int32)),
+              paddings=tf.convert_to_tensor(
+                  np.asarray([[0, 0, 0, 0, 0, 1], [0, 0, 0, 0, 0, 0]],
+                             np.float32))))
+
+      p = self._testParams()
+      mdl = p.Instantiate()
+
+      descriptor = mdl._CreateCanvasAndTargets(batch)
+
+      canvas, canvas_paddings, target_indices, target_weights = sess.run([
+          descriptor.canvas, descriptor.canvas_paddings,
+          descriptor.target_indices, descriptor.target_weights
+      ])
+
+      canvas_gold = np.asarray([[
+          32010, 32012, 32002, 2, 0, 0, 0, 0, 0, 0, 0, 0
+      ], [32020, 32021, 32022, 32024, 32025, 32002, 200, 201, 202, 204, 205, 2]
+                               ], np.int32)
+      canvas_paddings_gold = np.asarray([[0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1],
+                                         [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]],
+                                        np.float32)
+      target_indices_gold = np.asarray(
+          [[0, 0, 2], [0, 1, 11], [0, 1, 2], [0, 2, 14], [0, 2, 2], [1, 0, 2],
+           [1, 1, 2], [1, 2, 2], [1, 3, 2], [1, 4, 2], [1, 5, 2], [0, 3, 100],
+           [0, 3, 101], [0, 3, 102], [0, 3, 104], [0, 3, 2], [1, 6, 2],
+           [1, 7, 2], [1, 8, 2], [1, 9, 2], [1, 10, 2], [1, 11, 2]], np.int32)
+      target_weights_gold = np.asarray([1, 1, 0, 1, 0] + [1, 1, 1, 1, 1, 1] +
+                                       [1, 1, 1, 1, 0] + [1, 1, 1, 1, 1, 1],
+                                       np.float32)
+      target_weights_gold = np.reshape(target_weights_gold,
+                                       [target_weights_gold.shape[0], 1])
+
+      self.assertAllEqual(canvas, canvas_gold)
+      self.assertAllEqual(canvas_paddings, canvas_paddings_gold)
+      self.assertAllEqual(target_indices, target_indices_gold)
+      self.assertAllEqual(target_weights, target_weights_gold)
+
+  def testConstruction(self):
+    with self.session():
+      p = self._testParams()
+      mdl = p.Instantiate()
+      flatten_vars = mdl.vars.Flatten()
+      self.assertEqual(len(flatten_vars), 122)
+      self.assertEqual(len(tf.trainable_variables()), len(flatten_vars))
+
+  def testFPropGraph(self):
+    """Test the construction of the fprop graph, then fprop the graph."""
+    with self.session() as sess:
+      p = self._testParams()
+      mdl = p.Instantiate()
+      mdl.FPropDefaultTheta()
+
+      tf.global_variables_initializer().run()
+      sess.run(mdl.loss)
 
 
 if __name__ == '__main__':

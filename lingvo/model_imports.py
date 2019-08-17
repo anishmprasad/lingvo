@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,10 +24,9 @@ from __future__ import print_function
 
 import importlib
 import re
-import six
-import tensorflow as tf
-
 from lingvo import model_registry
+import lingvo.compat as tf
+import six
 
 _TASK_ROOT = 'lingvo.tasks'
 

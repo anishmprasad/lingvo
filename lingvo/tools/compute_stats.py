@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,9 +19,9 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import lingvo.compat as tf
 import numpy as np
-
-import tensorflow as tf
+from six.moves import range
 
 tf.flags.DEFINE_string('input_filepattern', '',
                        'File pattern of binary tfrecord files.')
@@ -72,7 +73,7 @@ class StatsCollector(object):
     sorted_lengths = sorted(self._lengths)
     num_buckets = FLAGS.num_buckets
     n = len(sorted_lengths)
-    idx = (n * (np.array(range(num_buckets - 1)) + 1)) // num_buckets
+    idx = (n * (np.array(list(range(num_buckets - 1))) + 1)) // num_buckets
     buckets = [sorted_lengths[i] for i in idx] + [sorted_lengths[-1]]
     tf.logging.info('== Buckets.')
     tf.logging.info('bucket upper limits: %s', buckets)
@@ -84,7 +85,7 @@ class StatsCollector(object):
   def _PrintMeanVar(self):
     m, v = self._ComputeMeanVar()
     original = np.get_printoptions()
-    np.set_printoptions(threshold='nan')
+    np.set_printoptions(threshold=np.inf)
     tf.logging.info('== Mean/variance.')
     tf.logging.info('mean = %s', m)
     tf.logging.info('var = %s', v)

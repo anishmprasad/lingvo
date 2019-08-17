@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # -*- coding: utf-8 -*-
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
@@ -18,23 +19,23 @@
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
-
-import tensorflow as tf
+from lingvo.core import ops
 from lingvo.core import test_helper
-from lingvo.core.ops import py_x_ops
+from lingvo.core import test_utils
+import tensorflow as tf
 
 
-class TokenizerOpsTest(tf.test.TestCase):
+class TokenizerOpsTest(test_utils.TestCase):
 
   def testLabelsToTokenId(self):
     with self.session(use_gpu=False) as sess:
       token_ids, target_ids, paddings = sess.run(
-          py_x_ops.ascii_to_token_id([
+          ops.ascii_to_token_id([
               'hElLo', 'sIr<epsilon>', 'What a <unk> day', 'america\'s',
               '<noise> early', '1:00 AM', '<text_only>morning'
           ],
-                                     append_eos=True,
-                                     maxlen=10))
+                                append_eos=True,
+                                maxlen=10))
     self.assertAllEqual(token_ids, [
         [1, 12, 9, 16, 16, 19, 2, 2, 2, 2],
         [1, 23, 13, 22, 73, 2, 2, 2, 2, 2],
@@ -60,12 +61,12 @@ class TokenizerOpsTest(tf.test.TestCase):
   def testLabelsToTokenIdAppendEOSFalse(self):
     with self.session(use_gpu=False) as sess:
       token_ids, target_ids, paddings = sess.run(
-          py_x_ops.ascii_to_token_id([
+          ops.ascii_to_token_id([
               'hElLo', 'sIr<epsilon>', 'What a <unk> day', 'america\'s',
               '<noise> early', '1:00 AM', '100%'
           ],
-                                     append_eos=False,
-                                     maxlen=10))
+                                append_eos=False,
+                                maxlen=10))
     self.assertAllEqual(
         token_ids,
         [[1, 12, 9, 16, 16, 19, 2, 2, 2, 2], [1, 23, 13, 22, 73, 2, 2, 2, 2, 2],
@@ -88,13 +89,13 @@ class TokenizerOpsTest(tf.test.TestCase):
   def testLabelsToTokenIdNoPadToMaxlen(self):
     with self.session(use_gpu=False) as sess:
       token_ids, target_ids, paddings = sess.run(
-          py_x_ops.ascii_to_token_id([
+          ops.ascii_to_token_id([
               'hElLo', 'sIr<epsilon>', 'What a <unk> day', 'america\'s',
               '<noise> early', '1:00 AM', '<text_only>morning'
           ],
-                                     append_eos=True,
-                                     maxlen=20,
-                                     pad_to_maxlen=False))
+                                append_eos=True,
+                                maxlen=20,
+                                pad_to_maxlen=False))
     self.assertAllEqual(token_ids, [
         [1, 12, 9, 16, 16, 19, 2, 2, 2, 2, 2, 2, 2],
         [1, 23, 13, 22, 73, 2, 2, 2, 2, 2, 2, 2, 2],
@@ -133,26 +134,25 @@ class TokenizerOpsTest(tf.test.TestCase):
                     2], [40, 34, 39, 39, 3, 5, 17, 2, 2,
                          2], [52, 2, 2, 2, 2, 2, 2, 2, 2, 2]]
       seq_lens = [5, 4, 9, 9, 7, 7, 1]
-      tokens = sess.run(py_x_ops.id_to_ascii(token_ids, seq_lens))
+      tokens = sess.run(ops.id_to_ascii(token_ids, seq_lens))
 
     self.assertEqual(tokens.tolist(), [
-        'hello', 'sir<epsilon>', 'what a <unk> ', "america's", '<noise> early',
-        '1:00 am', '%'
+        b'hello', b'sir<epsilon>', b'what a <unk> ', b"america's",
+        b'<noise> early', b'1:00 am', b'%'
     ])
 
   def testStrToVocabToken(self):
     vocab = test_helper.test_src_dir_path('core/ops/testdata/test_vocab.txt')
     with self.session(use_gpu=False) as sess:
       token_ids, target_ids, paddings = sess.run(
-          py_x_ops.str_to_vocab_tokens(
-              [
-                  'a b c d e',
-                  '<epsilon> <S> </S> <UNK>',
-                  'øut über ♣ 愤青 ←',
-              ],
-              append_eos=True,
-              maxlen=10,
-              vocab_filepath=vocab))
+          ops.str_to_vocab_tokens([
+              'a b c d e',
+              '<epsilon> <S> </S> <UNK>',
+              'øut über ♣ 愤青 ←',
+          ],
+                                  append_eos=True,
+                                  maxlen=10,
+                                  vocab_filepath=vocab))
       self.assertEqual(
           token_ids.tolist(),
           [[1, 5, 6, 7, 8, 9, 2, 2, 2, 2], [1, 0, 1, 2, 3, 2, 2, 2, 2, 2],
@@ -170,15 +170,14 @@ class TokenizerOpsTest(tf.test.TestCase):
     vocab = test_helper.test_src_dir_path('core/ops/testdata/test_vocab.txt')
     with self.session(use_gpu=False) as sess:
       token_ids, target_ids, paddings = sess.run(
-          py_x_ops.str_to_vocab_tokens(
-              [
-                  'a b c d e',
-                  '<epsilon> <S> </S> <UNK>',
-                  'øut über ♣ 愤青 ←',
-              ],
-              append_eos=False,
-              maxlen=10,
-              vocab_filepath=vocab))
+          ops.str_to_vocab_tokens([
+              'a b c d e',
+              '<epsilon> <S> </S> <UNK>',
+              'øut über ♣ 愤青 ←',
+          ],
+                                  append_eos=False,
+                                  maxlen=10,
+                                  vocab_filepath=vocab))
       self.assertEqual(
           token_ids.tolist(),
           [[1, 5, 6, 7, 8, 9, 2, 2, 2, 2], [1, 0, 1, 2, 3, 2, 2, 2, 2, 2],
@@ -196,10 +195,10 @@ class TokenizerOpsTest(tf.test.TestCase):
     vocab = test_helper.test_src_dir_path('core/ops/testdata/test_vocab.txt')
     with self.session(use_gpu=False) as sess:
       token_ids, target_ids, paddings = sess.run(
-          py_x_ops.str_to_vocab_tokens(['a b c d e ' * 1000],
-                                       append_eos=True,
-                                       maxlen=5,
-                                       vocab_filepath=vocab))
+          ops.str_to_vocab_tokens(['a b c d e ' * 1000],
+                                  append_eos=True,
+                                  maxlen=5,
+                                  vocab_filepath=vocab))
       self.assertEqual(token_ids.tolist(), [[1, 5, 6, 7, 8]])
       self.assertEqual(target_ids.tolist(), [[5, 6, 7, 8, 9]])
       self.assertEqual(paddings.tolist(), [[0., 0., 0., 0., 0.]])
@@ -208,15 +207,15 @@ class TokenizerOpsTest(tf.test.TestCase):
     vocab = test_helper.test_src_dir_path('core/ops/testdata/test_vocab.txt')
     with self.session(use_gpu=False) as sess:
       token_ids, target_ids, paddings = sess.run(
-          py_x_ops.str_to_vocab_tokens([
+          ops.str_to_vocab_tokens([
               'a b c d e',
               '<epsilon> <S> </S> <UNK>',
               'øut über ♣ 愤青 ←',
           ],
-                                       append_eos=True,
-                                       maxlen=10,
-                                       pad_to_maxlen=False,
-                                       vocab_filepath=vocab))
+                                  append_eos=True,
+                                  maxlen=10,
+                                  pad_to_maxlen=False,
+                                  vocab_filepath=vocab))
       self.assertEqual(
           token_ids.tolist(),
           [[1, 5, 6, 7, 8, 9], [1, 0, 1, 2, 3, 2], [1, 10, 11, 12, 13, 3]])
@@ -232,11 +231,11 @@ class TokenizerOpsTest(tf.test.TestCase):
     vocab = test_helper.test_src_dir_path('core/ops/testdata/test_vocab.txt')
     with self.session(use_gpu=False) as sess:
       token_ids, target_ids, paddings = sess.run(
-          py_x_ops.str_to_vocab_tokens([custom_delimiter.join('abcde')],
-                                       append_eos=True,
-                                       maxlen=8,
-                                       vocab_filepath=vocab,
-                                       delimiter=custom_delimiter))
+          ops.str_to_vocab_tokens([custom_delimiter.join('abcde')],
+                                  append_eos=True,
+                                  maxlen=8,
+                                  vocab_filepath=vocab,
+                                  delimiter=custom_delimiter))
       self.assertEqual(token_ids.tolist(), [[1, 5, 6, 7, 8, 9, 2, 2]])
       self.assertEqual(target_ids.tolist(), [[5, 6, 7, 8, 9, 2, 2, 2]])
       self.assertEqual(paddings.tolist(), [[0., 0., 0., 0., 0., 0., 1., 1.]])
@@ -246,11 +245,11 @@ class TokenizerOpsTest(tf.test.TestCase):
     vocab = test_helper.test_src_dir_path('core/ops/testdata/test_vocab.txt')
     with self.session(use_gpu=False) as sess:
       token_ids, target_ids, paddings = sess.run(
-          py_x_ops.str_to_vocab_tokens(['abcde'],
-                                       append_eos=True,
-                                       maxlen=8,
-                                       vocab_filepath=vocab,
-                                       delimiter=custom_delimiter))
+          ops.str_to_vocab_tokens(['abcde'],
+                                  append_eos=True,
+                                  maxlen=8,
+                                  vocab_filepath=vocab,
+                                  delimiter=custom_delimiter))
       self.assertEqual(token_ids.tolist(), [[1, 5, 6, 7, 8, 9, 2, 2]])
       self.assertEqual(target_ids.tolist(), [[5, 6, 7, 8, 9, 2, 2, 2]])
       self.assertEqual(paddings.tolist(), [[0., 0., 0., 0., 0., 0., 1., 1.]])
@@ -261,9 +260,9 @@ class TokenizerOpsTest(tf.test.TestCase):
       ngram_ids = [[14, 11, 6, 24, 7, 3, 13, 82, 2, 2],
                    [57, 3, 73, 17, 22, 9, 2, 2, 2, 2]]
       lengths = [8, 6]
-      scripts = py_x_ops.ngram_id_to_token(
+      scripts = ops.ngram_id_to_token(
           ngram_ids, lengths, ngram_vocab_filepath=vocab)
-      scripts_expected = ['pn?o"{twe', 'gh{rtlcr']
+      scripts_expected = [b'pn?o"{twe', b'gh{rtlcr']
       self.assertEqual(scripts_expected, scripts.eval().tolist())
 
   def testNgramIdToTokenSeparator(self):
@@ -272,9 +271,9 @@ class TokenizerOpsTest(tf.test.TestCase):
       ngram_ids = [[14, 11, 6, 24, 7, 3, 13, 82, 2, 2],
                    [57, 3, 73, 17, 22, 9, 2, 2, 2, 2]]
       lengths = [8, 6]
-      scripts = py_x_ops.ngram_id_to_token(
+      scripts = ops.ngram_id_to_token(
           ngram_ids, lengths, ngram_vocab_filepath=vocab, ngram_separator='.')
-      scripts_expected = ['p.n.?.o.".{.t.we', 'gh.{.rt.l.c.r']
+      scripts_expected = [b'p.n.?.o.".{.t.we', b'gh.{.rt.l.c.r']
       self.assertEqual(scripts_expected, scripts.eval().tolist())
 
   def testBpeTokenization(self):
@@ -286,9 +285,9 @@ class TokenizerOpsTest(tf.test.TestCase):
         'GIVE ME A PENNY', 'THEY LIVED ALONE', 'THEY GIVE ME A PENNY ALONE'
     ]
     expected_sentences = [
-        'GIVE ME A PENNY </s> ',
-        'THEY LIVED ALONE </s> ',
-        'THEY GIVE ME A PENNY ',
+        b'GIVE ME A PENNY </s> ',
+        b'THEY LIVED ALONE </s> ',
+        b'THEY GIVE ME A PENNY ',
     ]
     expected_token_ids = [
         [27, 9, 30, 14, 28, 14, 52, 11, 4, 6, 6, 10, 2, 2, 2],
@@ -297,11 +296,11 @@ class TokenizerOpsTest(tf.test.TestCase):
     ]
     with self.session(use_gpu=False):
       label_tensor = tf.constant(sentences)
-      _, token_ids, paddings = py_x_ops.bpe_words_to_ids(
+      _, token_ids, paddings = ops.bpe_words_to_ids(
           label_tensor, tokenization_filepath=word_vocab, maxlen=15)
       seq_lens = tf.cast(tf.reduce_sum(1 - paddings, axis=-1), tf.int32)
 
-      target_string = py_x_ops.bpe_ids_to_words(
+      target_string = ops.bpe_ids_to_words(
           token_ids, seq_lengths=seq_lens, vocab_filepath=code_vocab)
       self.assertEqual(expected_sentences, target_string.eval().tolist())
       self.assertEqual(expected_token_ids, token_ids.eval().tolist())

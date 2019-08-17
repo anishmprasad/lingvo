@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2019 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,11 +19,11 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import numpy as np
-import tensorflow as tf
-
-from tensorflow.python.framework import function
+import lingvo.compat as tf
 from lingvo.core import sendrecv
+from lingvo.core import test_utils
+import numpy as np
+from tensorflow.python.framework import function
 
 
 def _ListDevices(target):
@@ -35,7 +36,7 @@ def _Target():
   return ""
 
 
-class SendrecvTest(tf.test.TestCase):
+class SendrecvTest(test_utils.TestCase):
 
   def testBasic(self):
     devices = _ListDevices(_Target())

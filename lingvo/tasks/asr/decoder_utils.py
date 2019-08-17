@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,17 +19,22 @@ from __future__ import division
 from __future__ import print_function
 
 import copy
-
+import lingvo.compat as tf
+from lingvo.core import py_utils
+from lingvo.core import symbolic
 import six
 
-import tensorflow as tf
+from six.moves import range
 
-from lingvo.core import py_utils
+
+def _IsSymbolOrPositive(dim):
+  return symbolic.IsSymbol(dim) or dim > 0
 
 
 def SetRnnCellNodes(decoder_params, rnn_cell_params):
-  rnn_cell_params.num_output_nodes = decoder_params.rnn_cell_dim
-  if decoder_params.rnn_cell_hidden_dim > 0:
+  if _IsSymbolOrPositive(decoder_params.rnn_cell_dim):
+    rnn_cell_params.num_output_nodes = decoder_params.rnn_cell_dim
+  if _IsSymbolOrPositive(decoder_params.rnn_cell_hidden_dim):
     if not hasattr(rnn_cell_params, 'num_hidden_nodes'):
       raise ValueError(
           'num_hidden_nodes not supported by the RNNCell: %s' % rnn_cell_params)

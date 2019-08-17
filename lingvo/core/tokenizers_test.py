@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # -*- coding: utf-8 -*-
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
@@ -19,21 +20,20 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import lingvo.compat as tf
+from lingvo.core import test_helper
+from lingvo.core import test_utils
+from lingvo.core import tokenizers
 import numpy as np
 
-import tensorflow as tf
 
-from lingvo.core import test_helper
-from lingvo.core import tokenizers
-
-
-class TokenizersTest(tf.test.TestCase):
+class TokenizersTest(test_utils.TestCase):
 
   def testStringsTokenId(self):
     p = tokenizers.WpmTokenizer.Params()
     p.vocab_filepath = test_helper.test_src_dir_path('tasks/mt/wpm-ende.voc')
     p.vocab_size = 32000
-    wpm_tokenizer = p.cls(p)
+    wpm_tokenizer = p.Instantiate()
     with self.session(use_gpu=False) as sess:
       token_ids, target_ids, paddings = sess.run(
           wpm_tokenizer.StringsToIds(
@@ -53,7 +53,7 @@ class TokenizersTest(tf.test.TestCase):
     p = tokenizers.WpmTokenizer.Params()
     p.vocab_filepath = test_helper.test_src_dir_path('tasks/mt/wpm-ende.voc')
     p.vocab_size = 32000
-    wpm_tokenizer = p.cls(p)
+    wpm_tokenizer = p.Instantiate()
     with self.session(use_gpu=False) as sess:
       ref = tf.constant([
           'would that it were so simple',

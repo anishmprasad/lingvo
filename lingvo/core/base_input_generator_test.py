@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,12 +22,12 @@ from __future__ import print_function
 import os
 import shutil
 import tempfile
-
+import lingvo.compat as tf
+from lingvo.core import base_input_generator
+from lingvo.core import test_utils
 import numpy as np
 
-import tensorflow as tf
-
-from lingvo.core import base_input_generator
+from six.moves import range
 
 
 def _CreateFakeTFRecordFiles(record_count=10):
@@ -51,7 +52,7 @@ class ToyInputGenerator(base_input_generator.BaseDataExampleInputGenerator):
     return {'audio': tf.FixedLenFeature([48000], tf.float32)}
 
 
-class BaseExampleInputGeneratorTest(tf.test.TestCase):
+class BaseExampleInputGeneratorTest(test_utils.TestCase):
 
   def setUp(self):
     tf.reset_default_graph()
@@ -67,7 +68,7 @@ class BaseExampleInputGeneratorTest(tf.test.TestCase):
     p.dataset_type = tf.data.TFRecordDataset
     p.randomize_order = False
     p.parallel_readers = 1
-    ig = p.cls(p)
+    ig = p.Instantiate()
     with self.session(graph=tf.get_default_graph()) as sess:
       inputs = ig.InputBatch()
       eval_inputs = sess.run(inputs)
@@ -81,7 +82,7 @@ class BaseExampleInputGeneratorTest(tf.test.TestCase):
     p.dataset_type = tf.data.TFRecordDataset
     p.randomize_order = False
     p.parallel_readers = 1
-    ig = p.cls(p)
+    ig = p.Instantiate()
     with self.session(graph=tf.get_default_graph()) as sess:
       inputs = ig.InputBatch()
       eval_inputs = sess.run(inputs)

@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,13 +19,11 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import numpy as np
-
-import tensorflow as tf
-
+import lingvo.compat as tf
 from lingvo.core import cluster_factory
 from lingvo.core import plot
 from lingvo.core import py_utils
+import numpy as np
 
 
 def _ShouldAddSummary():
@@ -116,36 +115,32 @@ def AddAttentionSummary(attention_tensors,
       source sequence.
     tgt_paddings: A tensor of binary paddings shaped [target_len, batch] for the
       target sequence.
-    transcripts: Optional, transcripts shaped [batch, target_len] for the source
+    transcripts: Optional, transcripts shaped [batch, source_len] for the source
       sequence.
     max_outputs: Integer maximum number of elements of the batch to plot.
-
-  Returns:
-    The added image summary.
   """
   name = attention_tensors[0].name + '/Attention'
   if not _ShouldAddSummary():
-    return tf.summary.scalar('disabled_%s' % name, 0)
-  fig = plot.MatplotlibFigureSummary(name, max_outputs=max_outputs)
-  src_lens = SequenceLength(tf.transpose(src_paddings))
-  tgt_lens = SequenceLength(tf.transpose(tgt_paddings))
-  for n, atten in enumerate(attention_tensors):
-    # Diagnostic metric that decreases as attention picks up.
-    max_entropy = tf.log(tf.cast(src_lens, tf.float32))
-    max_entropy = tf.expand_dims(tf.expand_dims(max_entropy, 0), -1)
-    atten_normalized_entropy = -atten * tf.log(atten + 1e-10) / max_entropy
-    scalar('Attention/average_normalized_entropy/%d' % n,
-           tf.reduce_mean(atten_normalized_entropy))
-    args = [tf.transpose(atten, [1, 0, 2]), src_lens, tgt_lens]
-    if transcripts is not None and n == 0:
-      args.append(transcripts)
-    fig.AddSubplot(
-        args,
-        TrimPaddingAndPlotAttention,
-        title=atten.name,
-        xlabel='Input',
-        ylabel='Output')
-  return fig.Finalize()
+    return
+  with plot.MatplotlibFigureSummary(name, max_outputs=max_outputs) as fig:
+    src_lens = SequenceLength(tf.transpose(src_paddings))
+    tgt_lens = SequenceLength(tf.transpose(tgt_paddings))
+    for n, atten in enumerate(attention_tensors):
+      # Diagnostic metric that decreases as attention picks up.
+      max_entropy = tf.log(tf.cast(src_lens, tf.float32))
+      max_entropy = tf.expand_dims(tf.expand_dims(max_entropy, 0), -1)
+      atten_normalized_entropy = -atten * tf.log(atten + 1e-10) / max_entropy
+      scalar('Attention/average_normalized_entropy/%d' % n,
+             tf.reduce_mean(atten_normalized_entropy))
+      args = [tf.transpose(atten, [1, 0, 2]), src_lens, tgt_lens]
+      if transcripts is not None and n == 0:
+        args.append(transcripts)
+      fig.AddSubplot(
+          args,
+          TrimPaddingAndPlotAttention,
+          title=atten.name,
+          xlabel='Input',
+          ylabel='Output')
 
 
 def AddNormSummary(name, vs_gs):
@@ -169,18 +164,14 @@ def AddNormSummary(name, vs_gs):
 def CollectVarHistogram(vs_gs):
   """Adds histogram summaries for variables and gradients."""
 
-  def SummaryNamePrefix(n):
-    return n.split(':')[0].replace('/', '.') + '/'
-
-  for var, grad in vs_gs.Flatten():
-    with tf.device(
-        var.device), tf.name_scope(var.name.split(':')[0] + '/summary'):
-      name_prefix = SummaryNamePrefix(var.name)
+  for name, (var, grad) in vs_gs.FlattenItems():
+    with tf.device(var.device), tf.name_scope(name + '/summary'):
       if isinstance(grad, tf.IndexedSlices):
         var = tf.gather(var, grad.indices)
         grad = grad.values
       if var.dtype.is_complex:
         var = tf.abs(var)
         grad = tf.abs(grad)
-      histogram(name_prefix + 'var_hist', var)
-      histogram(name_prefix + 'grad_hist', grad)
+
+    histogram('var_hist/' + name, var)
+    histogram('grad_hist/' + name, grad)

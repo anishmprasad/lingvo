@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,11 +23,11 @@ import math
 
 from lingvo.core import attention
 from lingvo.core import layers
-from lingvo.core import lr_schedule
 from lingvo.core import optimizer
 from lingvo.core import py_utils
 from lingvo.core import rnn_cell
 from lingvo.core import rnn_layers
+from lingvo.core import schedule
 from lingvo.tasks.mt import decoder
 from lingvo.tasks.mt import encoder
 from lingvo.tasks.mt import input_generator
@@ -143,7 +144,11 @@ def SetupTransformerParams(p,
                            relu_dropout_prob=0.0,
                            label_smoothing_uncertainty=0.1,
                            is_transparent=False,
-                           activation='RELU'):
+                           activation='RELU',
+                           add_unnormalized_residuals=False,
+                           atten_hidden_dim=0,
+                           num_encoder_layers=None,
+                           num_decoder_layers=None):
   """Common model setup for different transformer models.
 
   Args:
@@ -172,6 +177,11 @@ def SetupTransformerParams(p,
     is_transparent: If set, decoder layers attend to weighted combinations of
         encoder layers.
     activation: Non-linearity for feed-forward layers.
+    add_unnormalized_residuals: If set, uses un-normalized residuals in
+        TransformerAttentionLayer
+    atten_hidden_dim: Explicitly set attention hidden dim.
+    num_encoder_layers: to set a different number of layers for the encoder.
+    num_decoder_layers: to set a different number of layers for the decoder.
 
   Returns:
     A Params object containing the parameters that specify a transformer model
@@ -181,22 +191,25 @@ def SetupTransformerParams(p,
   p.name = name
 
   # Transformer encoder and decoder setup
+  num_encoder_layers = num_encoder_layers or num_layers
+  num_decoder_layers = num_decoder_layers or num_layers
   p.encoder = SetupTransformerEncoder(
-      model_dim, vocab_size, num_layers, num_heads, hidden_dim,
+      model_dim, vocab_size, num_encoder_layers, num_heads, hidden_dim,
       residual_dropout_prob, input_dropout_prob, atten_dropout_prob,
-      relu_dropout_prob, is_transparent, activation)
+      relu_dropout_prob, is_transparent, activation, add_unnormalized_residuals,
+      atten_hidden_dim)
   p.decoder = SetupTransformerDecoder(
-      model_dim, vocab_size, num_layers, num_heads, hidden_dim,
+      model_dim, vocab_size, num_decoder_layers, num_heads, hidden_dim,
       residual_dropout_prob, input_dropout_prob, atten_dropout_prob,
       relu_dropout_prob, label_smoothing_uncertainty, is_transparent,
-      activation)
+      activation, add_unnormalized_residuals, atten_hidden_dim)
 
   p.train.Set(
       learning_rate=learning_rate,
       optimizer=optimizer.Adam.ParamsB(),
       clip_gradient_norm_to_value=0.0,
       grad_norm_to_clip_to_zero=0.0,
-      lr_schedule=lr_schedule.TransformerLearningRateSchedule.Params().Set(
+      lr_schedule=schedule.TransformerLearningRateSchedule.Params().Set(
           warmup_steps=warmup_steps, worker_replicas=1, model_dim=model_dim))
 
   p.eval.samples_per_summary = 12000
@@ -214,7 +227,9 @@ def SetupTransformerDecoder(model_dim,
                             relu_dropout_prob=0.0,
                             label_smoothing_uncertainty=0.1,
                             is_transparent=False,
-                            activation='RELU'):
+                            activation='RELU',
+                            add_unnormalized_residuals=False,
+                            atten_hidden_dim=0):
   """Common setup for transformer model decoder."""
   disable_vn = py_utils.VariationalNoiseParams(1.0, False, False)
   default_params_init = py_utils.WeightInit.Xavier(1.0)
@@ -245,6 +260,8 @@ def SetupTransformerDecoder(model_dim,
       residual_dropout_prob=residual_dropout_prob,
       atten_dropout_prob=atten_dropout_prob,
       params_init=default_params_init,
+      add_unnormalized_input=add_unnormalized_residuals,
+      atten_hidden_dim=atten_hidden_dim,
       vn=disable_vn)
 
   decoder_params.trans_tpl.tr_atten_tpl.atten_tpl.Set(
@@ -289,7 +306,9 @@ def SetupTransformerEncoder(model_dim,
                             atten_dropout_prob=0.0,
                             relu_dropout_prob=0.0,
                             is_transparent=False,
-                            activation='RELU'):
+                            activation='RELU',
+                            add_unnormalized_residuals=False,
+                            atten_hidden_dim=0):
   """Common setup for transformer model encoder.
 
   Args:
@@ -305,6 +324,9 @@ def SetupTransformerEncoder(model_dim,
    relu_dropout_prob: used in transformer feedforward layer.
    is_transparent: if set, outputs a merger of embeddings and layer outputs.
    activation: Non-linearity for feed-forward layers.
+   add_unnormalized_residuals: If set, uses un-normalized residuals in
+     TransformerAttentionLayer
+   atten_hidden_dim: Explicitly set attention hidden dim.
 
   Returns:
    Encoder params.
@@ -338,6 +360,8 @@ def SetupTransformerEncoder(model_dim,
       residual_dropout_prob=residual_dropout_prob,
       atten_dropout_prob=atten_dropout_prob,
       params_init=default_params_init,
+      add_unnormalized_input=add_unnormalized_residuals,
+      atten_hidden_dim=atten_hidden_dim,
       vn=disable_vn)
 
   encoder_params.transformer_stack.transformer_tpl.tr_atten_tpl.atten_tpl.Set(
@@ -467,7 +491,7 @@ def SetupRNMTParams(p,
 
   # Optimization setup.
   learning_rate_schedule = (
-      lr_schedule.LinearRampupExponentialDecayScaledByNumSplitSchedule.Params()
+      schedule.LinearRampupExponentialDecayScaledByNumSplitSchedule.Params()
       .Set(
           warmup=lr_warmup_steps,
           decay_start=lr_decay_start,

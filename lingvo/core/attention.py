@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,16 +19,17 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import numpy as np
-import tensorflow as tf
-
-from tensorflow.python.framework import function
-from tensorflow.python.ops import inplace_ops
-
+import lingvo.compat as tf
 from lingvo.core import base_layer
 from lingvo.core import layers
 from lingvo.core import py_utils
 from lingvo.core import quant_utils
+from lingvo.core import summary_utils
+
+import numpy as np
+
+from tensorflow.python.framework import function
+from tensorflow.python.ops import inplace_ops
 
 
 # Currently, quantization statistics cannot be accumulated across arbitrary
@@ -44,19 +46,16 @@ def _ConditionalDefun(cond, *args, **kwargs):
   return Decorator
 
 
-def _ApplyAttentionDropout(params, x, step_state=None, prng_seed=None):
+def _ApplyAttentionDropout(params, x, global_step):
   """Apply attention dropout according to the given parameters.
 
   If `params.atten_dropout_deterministic` is set to True, the dropout will be
-  fully deterministic (requires `step_state` and `prng_seed`).
+  fully deterministic.
 
   Args:
     params: The parameters of attention layer.
     x: A float Tensor on which to apply dropout.
-    step_state: (Optional) A `.NestedMap` with `global_step` and `time_step`.
-      Required for deterministic dropout.
-    prng_seed: (Optional) An int seed for pseudo random number generator.
-      Required for deterministic dropout.
+    global_step: Required for deterministic dropout.
 
   Returns:
     A Tensor with the same shape as `x`.
@@ -65,21 +64,127 @@ def _ApplyAttentionDropout(params, x, step_state=None, prng_seed=None):
     return x
 
   if params.atten_dropout_deterministic:
-    if isinstance(step_state, py_utils.NestedMap):
-      assert 'global_step' in step_state, step_state.DebugString()
-      assert 'time_step' in step_state, step_state.DebugString()
-      assert prng_seed is not None
-      seeds = prng_seed + tf.stack(
-          [step_state.global_step, step_state.time_step])
-    else:
-      assert prng_seed is not None
-      seeds = py_utils.GetOpSeedPair(prng_seed)
-
+    seeds = py_utils.GenerateStepSeedPair(params, global_step)
     return py_utils.DeterministicDropout(x, 1.0 - params.atten_dropout_prob,
                                          seeds)
   else:
-    seed = None if not params.random_seed else prng_seed
-    return tf.nn.dropout(x, 1.0 - params.atten_dropout_prob, seed=seed)
+    return tf.nn.dropout(
+        x, 1.0 - params.atten_dropout_prob, seed=params.random_seed)
+
+
+def SafeCumprod(x, *args, **kwargs):
+  """Computes cumprod of x in logspace using cumsum to avoid underflow.
+
+  The cumprod function and its gradient can result in numerical instabilities
+  when its argument has very small and/or zero values.  As long as the argument
+  is all positive, we can instead compute the cumulative product as
+  exp(cumsum(log(x))).  This function can be called identically to tf.cumprod.
+
+  Args:
+    x: Tensor to take the cumulative product of.
+    *args: Passed on to cumsum; these are identical to those in cumprod.
+    **kwargs: Passed on to cumsum; these are identical to those in cumprod.
+
+  Returns:
+    Cumulative product of x.
+  """
+  with tf.name_scope(None, 'SafeCumprod', [x]):
+    x = tf.convert_to_tensor(x, name='x')
+    tiny = np.finfo(x.dtype.as_numpy_dtype).tiny
+    return tf.exp(
+        tf.cumsum(tf.log(tf.clip_by_value(x, tiny, 1)), *args, **kwargs))
+
+
+# pyformat: disable
+def MonotonicAttentionProb(p_choose_i, previous_attention, mode):
+  """Compute monotonic attention distribution from choosing probabilities.
+
+  Monotonic attention implies that the input sequence is processed in an
+  explicitly left-to-right manner when generating the output sequence.  In
+  addition, once an input sequence element is attended to at a given output
+  timestep, elements occurring before it cannot be attended to at subsequent
+  output timesteps.  This function generates attention distributions according
+  to these assumptions.  For more information, see `Online and Linear-Time
+  Attention by Enforcing Monotonic Alignments`.
+
+  Args:
+    p_choose_i: Probability of choosing input sequence/memory element i.  Should
+      be of shape (batch_size, input_sequence_length), and should all be in the
+      range [0, 1].
+    previous_attention: The attention distribution from the previous output
+      timestep.  Should be of shape (batch_size, input_sequence_length).  For
+      the first output timestep, preevious_attention[n] should be [1, 0, 0, ...,
+      0] for all n in [0, ... batch_size - 1].
+    mode: How to compute the attention distribution. Must be one of `recursive`,
+      `parallel`, or `hard`.
+
+      * recursive: uses tf.scan to recursively compute the distribution. This is
+        slowest but is exact, general, and does not suffer from numerical
+        instabilities.
+      * parallel: uses parallelized cumulative-sum and cumulative-product
+        operations to compute a closed-form solution to the recurrence relation
+        defining the attention distribution.  This makes it more efficient than
+        'recursive', but it requires numerical checks which make the
+        distribution non-exact.  This can be a problem in particular when
+        input_sequence_length is long and/or p_choose_i has entries very close
+        to 0 or 1.
+      * hard: requires that the probabilities in p_choose_i are all either 0 or
+        1, and subsequently uses a more efficient and exact solution.
+
+  Returns:
+    A tensor of shape (batch_size, input_sequence_length) representing the
+    attention distributions for each sequence in the batch.
+
+  Raises:
+    ValueError: mode is not one of 'recursive', 'parallel', 'hard'.
+  """
+  # pyformat: enable
+  # Force things to be tensors
+  p_choose_i = tf.convert_to_tensor(p_choose_i, name='p_choose_i')
+  previous_attention = tf.convert_to_tensor(
+      previous_attention, name='previous_attention')
+  if mode == 'recursive':
+    batch_size = py_utils.GetShape(p_choose_i)[0]
+    tf.logging.info(batch_size)
+    # Compute [1, 1 - p_choose_i[0], 1 - p_choose_i[1], ..., 1 - p_choose_i[-2]]
+    shifted_1mp_choose_i = tf.concat(
+        [tf.ones((batch_size, 1)), 1 - p_choose_i[:, :-1]], 1)
+    # Compute attention distribution recursively as
+    # q[i] = (1 - p_choose_i[i - 1])*q[i - 1] + previous_attention[i]
+    # attention[i] = p_choose_i[i]*q[i]
+    attention = p_choose_i * tf.transpose(
+        tf.scan(
+            # Need to use reshape to remind TF of the shape between loop
+            # iterations.
+            lambda x, yz: tf.reshape(yz[0] * x + yz[1], (batch_size,)),
+            # Loop variables yz[0] and yz[1]
+            [
+                tf.transpose(shifted_1mp_choose_i),
+                tf.transpose(previous_attention)
+            ],
+            # Initial value of x is just zeros
+            tf.zeros((batch_size,))))
+  elif mode == 'parallel':
+    # SafeCumprod computes cumprod in logspace with numeric checks
+    cumprod_1mp_choose_i = SafeCumprod(1 - p_choose_i, axis=1, exclusive=True)
+    # Compute recurrence relation solution
+    attention = p_choose_i * cumprod_1mp_choose_i * tf.cumsum(
+        previous_attention /
+        # Clip cumprod_1mp to avoid divide-by-zero
+        tf.clip_by_value(cumprod_1mp_choose_i, 1e-10, 1.),
+        axis=1)
+  elif mode == 'hard':
+    # Remove any probabilities before the index chosen last time step
+    p_choose_i *= tf.cumsum(previous_attention, axis=1)
+    # Now, use exclusive cumprod to remove probabilities after the first
+    # chosen index, like so:
+    # p_choose_i = [0, 0, 0, 1, 1, 0, 1, 1]
+    # cumprod(1 - p_choose_i, exclusive=True) = [1, 1, 1, 1, 0, 0, 0, 0]
+    # Product of above: [0, 0, 0, 1, 0, 0, 0, 0]
+    attention = p_choose_i * tf.cumprod(1 - p_choose_i, axis=1, exclusive=True)
+  else:
+    raise ValueError("mode must be 'recursive', 'parallel', or 'hard'.")
+  return attention
 
 
 class BaseAttentionLayer(quant_utils.QuantizableLayer):
@@ -111,11 +216,7 @@ class BaseAttentionLayer(quant_utils.QuantizableLayer):
       raise ValueError('params.name is not set.')
     super(BaseAttentionLayer, self).__init__(params)
 
-    p = self.params
     self._source_init_done = False
-    self._prng_seed = py_utils.GenerateSeedFromName(p.name)
-    if p.random_seed:
-      self._prng_seed += p.random_seed
     self.TrackQTensor('logits', domain='fullyconnected')
 
   def InitForSourcePacked(self,
@@ -132,14 +233,14 @@ class BaseAttentionLayer(quant_utils.QuantizableLayer):
     `source_padding`.
 
     Args:
-      theta: A `.NestedMap` object containing weights' values of this
-        layer and its children layers.
+      theta: A `.NestedMap` object containing weights' values of this layer and
+        its children layers.
       source_vecs: A single tensor of shape [time, batch_size, source_dim].
       source_contexts: A single tensor of shape [time, batch_size, some_dim].
       source_padding: A tensor of shape [time, batch_size].
-      source_segment_id: A tensor of shape [time, batch_size].
-        source_segment_id is not None for packed inputs where one training
-        example may pack multiple sequences.
+      source_segment_id: A tensor of shape [time, batch_size]. source_segment_id
+        is not None for packed inputs where one training example may pack
+        multiple sequences.
 
     Returns:
       A `.NestedMap` object to be passed to ComputeContextVectorWithSource.
@@ -189,21 +290,18 @@ class BaseAttentionLayer(quant_utils.QuantizableLayer):
                                      query_vec,
                                      attention_state=None,
                                      per_step_source_padding=None,
-                                     step_state=None,
                                      query_segment_id=None):
     """Computes the context vector given the current query output.
 
     Args:
-      theta: A `.NestedMap` object containing weights' values of this
-        layer and its children layers.
+      theta: A `.NestedMap` object containing weights' values of this layer and
+        its children layers.
       packed_src: A `.NestedMap` object returned by PackSource or
         InitForSourcePacked.
       query_vec: a tensor of shape [batch_size, query_dim].
       attention_state: previous attention state.
       per_step_source_padding: Source sequence padding to apply at this step. If
-        not None, it should have shape [target_batch_size, source_seq_length].
-      step_state: A `.NestedMap` containing `global_step` and `time_step`.
-        Required for deterministic dropout.
+        not None, it should have shape [target_batch_size, source_length].
       query_segment_id: a tensor of shape [batch_size].
 
     Returns:
@@ -222,7 +320,6 @@ class BaseAttentionLayer(quant_utils.QuantizableLayer):
                            query_vec,
                            attention_state=None,
                            per_step_source_padding=None,
-                           step_state=None,
                            query_segment_id=None):
     """Computes the context vector given the current query output.
 
@@ -230,15 +327,12 @@ class BaseAttentionLayer(quant_utils.QuantizableLayer):
     source tensors, `ComputeContextVector` uses the class' internal variables.
 
     Args:
-      theta: A `.NestedMap` object containing weights' values of this
-        layer and its children layers.
+      theta: A `.NestedMap` object containing weights' values of this layer and
+        its children layers.
       query_vec: a tensor of shape [batch_size, query_dim].
       attention_state: previous attention state.
-      per_step_source_padding: Source sequence padding to apply at this step.
-        If not None, it should be of shape [target_batch_size,
-        source_seq_length].
-      step_state: A `.NestedMap` containing `global_step` and `time_step`.
-        Required for deterministic dropout.
+      per_step_source_padding: Source sequence padding to apply at this step. If
+        not None, it should be of shape [target_batch_size, source_length].
       query_segment_id: a tensor of shape [batch_size].
 
     Returns:
@@ -250,9 +344,10 @@ class BaseAttentionLayer(quant_utils.QuantizableLayer):
         dimensions [target_batch, ...]
     """
     assert self._source_init_done
-    return self.ComputeContextVectorWithSource(
-        theta, self._packed_src, query_vec, attention_state,
-        per_step_source_padding, step_state, query_segment_id)
+    return self.ComputeContextVectorWithSource(theta, self._packed_src,
+                                               query_vec, attention_state,
+                                               per_step_source_padding,
+                                               query_segment_id)
 
   def GetInitializationSourceState(self):
     """Gets the attention initialization state.
@@ -276,8 +371,8 @@ class BaseAttentionLayer(quant_utils.QuantizableLayer):
 
     Args:
       new_init_state: A `.NestedMap` matching what was returned from
-      `GetInitializationSourceState`, which will return this layer to that
-      initialization state.
+        `GetInitializationSourceState`, which will return this layer to that
+        initialization state.
     """
     self._source_init_done = True
     self._packed_src = new_init_state.DeepCopy()
@@ -294,8 +389,9 @@ class BaseAttentionLayer(quant_utils.QuantizableLayer):
       logits: Logits.
       padding: Padding (must be the same shape as logits).
       narrow_to_asym_bit_depth: Narrows the bit depth, removing the upper limit
-          value. This is to accommodate certain interpreters that would cover a
-          0 .... 2**bits - 1 range for quantization.
+        value. This is to accommodate certain interpreters that would cover a 0
+        .... 2**bits - 1 range for quantization.
+
     Returns:
       Result of the softmax.
     """
@@ -307,8 +403,8 @@ class BaseAttentionLayer(quant_utils.QuantizableLayer):
     assert logits.dtype.is_floating
     assert hasattr(logits.dtype, 'max')
     very_negative_logits = (
-        tf.ones_like(logits) * logits.dtype.max * tf.constant(
-            -0.7, dtype=logits.dtype))
+        tf.ones_like(logits) * logits.dtype.max *
+        tf.constant(-0.7, dtype=logits.dtype))
     if p.is_eval:
       very_negative_logits = self.QTensor('logits', very_negative_logits)
     padded_logits = tf.where(padding > 0.0, very_negative_logits, logits)
@@ -338,7 +434,8 @@ class BaseAttentionLayer(quant_utils.QuantizableLayer):
     # Generating packed input mask for attention padding.
     source_segment_ids = tf.expand_dims(source_segment_ids, 1)
     query_segment_ids = tf.reshape(
-        query_segment_ids, [1, -1, tf.shape(source_segment_ids)[2]])
+        query_segment_ids,
+        [1, -1, py_utils.GetShape(source_segment_ids)[2]])
     padding = tf.where(
         tf.equal(source_segment_ids, query_segment_ids), padding,
         tf.ones_like(padding))
@@ -445,7 +542,7 @@ class AdditiveAttention(BaseAttentionLayer):
     # Adds the atten function into the graph's library.
     def Atten(v, w, source_padding, source_segment_id, concated_source_vecs,
               concated_source_contexts, query_vec, query_segment_id,
-              per_step_source_padding, step_state):
+              per_step_source_padding, global_step):
       """Computes the attention context vector.
 
       Args:
@@ -458,15 +555,14 @@ class AdditiveAttention(BaseAttentionLayer):
         query_vec: [target_batch, query_dim]
         query_segment_id: [target_batch]
         per_step_source_padding: [target_batch, source_length]
-        step_state: A `.NestedMap` containing 'global_step' and 'time_step'.
-          Required for deterministic dropout.
-
+        global_step: Required for deterministic dropout.
       Note: concated_source_vecs are the vectors that are used to compute the
-      attention score between the query_vec and each concated_source_vec.
-      The concated_source_contexts are the vectors that compose the result.
-      The attention context vector is computed as a weighted average of the
-      concated_source_contexts, using the scores that were computed using
-      concated_source_vecs.
+        attention score between the query_vec and each concated_source_vec. The
+        concated_source_contexts are the vectors that compose the result. The
+        attention context vector is computed as a weighted average of the
+        concated_source_contexts, using the scores that were computed using
+        concated_source_vecs.
+
       Returns:
         attention context vectors and probabilities.
       """
@@ -490,7 +586,7 @@ class AdditiveAttention(BaseAttentionLayer):
 
       # Apply dropout to weights if applicable.
       if not p.is_eval:
-        probs = _ApplyAttentionDropout(p, probs, step_state, self._prng_seed)
+        probs = _ApplyAttentionDropout(p, probs, global_step)
 
       # Reshape probs to be of shape
       # [target_batch/source_batch, source_batch, source_length]
@@ -514,7 +610,7 @@ class AdditiveAttention(BaseAttentionLayer):
     def AttenSameBatchSize(v, w, source_padding, source_segment_id,
                            concated_source_vecs, concated_source_contexts,
                            query_vec, query_segment_id, per_step_source_padding,
-                           step_state):
+                           global_step):
       """Computes the attention context vector.
 
       Args:
@@ -523,12 +619,11 @@ class AdditiveAttention(BaseAttentionLayer):
         source_padding: [sl, b]
         source_segment_id: [sl, b]
         concated_source_vecs: [sl, b, hidden_dim].
-        concated_source_contexts: [b, sl, hidden_dim]
+        concated_source_contexts: [b, sl, context_dim]
         query_vec: [b, query_dim]
         query_segment_id: [b]
         per_step_source_padding: [b, sl]
-        step_state: A `.NestedMap` containing 'global_step' and 'time_step'.
-          Required for deterministic dropout.
+        global_step: Required for deterministic dropout.
 
       Returns:
         attention context vectors and probabilities.
@@ -536,7 +631,7 @@ class AdditiveAttention(BaseAttentionLayer):
       # TODO(jiaye): support dropout
       if p.atten_dropout_prob != 0:
         raise NotImplementedError('dropout is not supported')
-      del step_state
+      del global_step
 
       # [b, hidden_dim]
       query_vec = py_utils.Matmul(query_vec, w)
@@ -577,9 +672,9 @@ class AdditiveAttention(BaseAttentionLayer):
       # concated_source_vecs[i, :, :].
       # Reshaped probs is of shape [b, 1, sl]
       reshaped_probs = tf.expand_dims(probs, 1)
-      # [b, 1, sl] * [b, sl, hidden_dim] = [b, 1, hidden_dim]
+      # [b, 1, sl] * [b, sl, context_dim] = [b, 1, context_dim]
       contexts = tf.matmul(reshaped_probs, concated_source_contexts)
-      # Reshaped context is of shape [b, hidden_dim]
+      # Reshaped context is of shape [b, context_dim]
       contexts = tf.squeeze(contexts, axis=1)
       return contexts, probs
 
@@ -605,11 +700,13 @@ class AdditiveAttention(BaseAttentionLayer):
                  source_contexts,
                  source_padding,
                  source_segment_id=None):
-    """Packs source vectors. Does not change attention state.
+    """Packs source vectors.
+
+    Does not change attention state.
 
     Args:
-      theta: A `.NestedMap` object containing weights' values of this
-        layer and its children layers.
+      theta: A `.NestedMap` object containing weights' values of this layer and
+        its children layers.
       source_vecs: A single tensor of shape [time, batch_size, source_dim].
       source_contexts: A single tensor of shape [time, batch_size, some_dim].
       source_padding: A tensor of shape [time, batch_size].
@@ -637,7 +734,7 @@ class AdditiveAttention(BaseAttentionLayer):
         # [time, batch_size].
         source_segment_id=source_segment_id)
 
-  def ZeroAttentionState(self, source_seq_length, decoder_batch_size):
+  def ZeroAttentionState(self, source_length, decoder_batch_size):
     p = self.params
     # This is just a dummy state. The first dimension of the state has to match
     # decoder_batch_size.
@@ -650,7 +747,6 @@ class AdditiveAttention(BaseAttentionLayer):
                                      query_vec,
                                      attention_state=None,
                                      per_step_source_padding=None,
-                                     step_state=None,
                                      query_segment_id=None):
     """Computes the context vector given the current query output.
 
@@ -662,18 +758,15 @@ class AdditiveAttention(BaseAttentionLayer):
     `packed_src.source_vecs`.
 
     Args:
-      theta: A `.NestedMap` object containing weights' values of this
-        layer and its children layers.
+      theta: A `.NestedMap` object containing weights' values of this layer and
+        its children layers.
       packed_src: A `.NestedMap` object returned by PackSource or
         InitForSourcePacked.
       query_vec: a tensor of shape [batch_size, query_dim].
       attention_state: previous attention state. It is not used in
-          `AdditiveAttention`, and is simply passed through.
-      per_step_source_padding: Source sequence padding to apply at this step.
-        If not None, it should be of shape [target_batch_size,
-        source_seq_length].
-      step_state: A `.NestedMap` containing `global_step` and `time_step`.
-        Required for deterministic dropout.
+        `AdditiveAttention`, and is simply passed through.
+      per_step_source_padding: Source sequence padding to apply at this step. If
+        not None, it should be of shape [target_batch_size, source_length].
       query_segment_id: a tensor of shape [batch_size]
 
     Returns:
@@ -691,13 +784,12 @@ class AdditiveAttention(BaseAttentionLayer):
     source_padding = packed_src.source_padding
     source_segment_id = packed_src.source_segment_id
     query_batch_size = py_utils.GetShape(query_vec)[0]
-    source_seq_length = py_utils.GetShape(source_padding)[0]
+    source_length = py_utils.GetShape(source_padding)[0]
     if per_step_source_padding is None:
       zero = tf.constant(0.0, dtype=query_vec.dtype)
-      per_step_source_padding = tf.fill([query_batch_size, source_seq_length],
-                                        zero)
+      per_step_source_padding = tf.fill([query_batch_size, source_length], zero)
     per_step_source_padding = py_utils.HasShape(
-        per_step_source_padding, [query_batch_size, source_seq_length])
+        per_step_source_padding, [query_batch_size, source_length])
     hidden = py_utils.AddPerStepVN(p, theta.hidden_var)
     query = py_utils.AddPerStepVN(p, theta.query_var)
 
@@ -707,10 +799,11 @@ class AdditiveAttention(BaseAttentionLayer):
       query_segment_id = tf.zeros(
           tf.shape(query_vec)[0], dtype=source_padding.dtype)
 
-    ctx_vec, prob = self._ctx_vec(
-        hidden, query, source_padding, source_segment_id, concated_source_vecs,
-        concated_source_contexts, query_vec, query_segment_id,
-        per_step_source_padding, step_state)
+    ctx_vec, prob = self._ctx_vec(hidden, query, source_padding,
+                                  source_segment_id, concated_source_vecs,
+                                  concated_source_contexts, query_vec,
+                                  query_segment_id, per_step_source_padding,
+                                  theta.global_step)
 
     return ctx_vec, prob, attention_state
 
@@ -765,7 +858,7 @@ class DotProductAttention(BaseAttentionLayer):
         source_padding:           [time, source_batch].
         concated_source_vecs:     [time, source_batch, source_dim].
         query_vec:                [target_batch, source_dim].
-        per_step_source_padding:  [target_batch, source_seq_length]
+        per_step_source_padding:  [target_batch, source_length]
         source_segment_id:        [time, source_batch].
         query_segment_id:         [target_batch].
 
@@ -843,7 +936,7 @@ class DotProductAttention(BaseAttentionLayer):
 
     def Atten(per_dim_scale, source_padding, source_segment_id,
               concated_source_vecs, concated_source_contexts, query_vec,
-              query_segment_id, per_step_source_padding, step_state):
+              query_segment_id, per_step_source_padding, global_step):
       """Main attention function.
 
       Args:
@@ -854,17 +947,14 @@ class DotProductAttention(BaseAttentionLayer):
         concated_source_contexts: [source_batch, time, context_dim].
         query_vec:                [target_batch, source_dim].
         query_segment_id:         [target_batch].
-        per_step_source_padding:  [target_batch, source_seq_length]
-        step_state:               A `.NestedMap` containing 'global_step' and
-                                  'time_step'. Required for deterministic
-                                  dropout.
-
+        per_step_source_padding:  [target_batch, source_length]
+        global_step:              Required for deterministic dropout.
       Note: concated_source_vecs are the vectors that are used to compute the
-      attention score between the query_vec and each concated_source_vec.
-      The concated_source_contexts are the vectors that compose the result.
-      The attention context vector is computed as a weighted average of the
-      concated_source_contexts, using the scores that were computed using
-      concated_source_vecs.
+        attention score between the query_vec and each concated_source_vec. The
+        concated_source_contexts are the vectors that compose the result. The
+        attention context vector is computed as a weighted average of the
+        concated_source_contexts, using the scores that were computed using
+        concated_source_vecs.
 
       Returns:
         context_vector: [target_batch, context_dim].
@@ -877,9 +967,10 @@ class DotProductAttention(BaseAttentionLayer):
       source_batch = tf.shape(concated_source_vecs)[1]
       target_batch = tf.shape(query_vec)[0]
       n = target_batch // source_batch
-      returned_probs = AttenProbs(
-          per_dim_scale, source_padding, concated_source_vecs, query_vec,
-          per_step_source_padding, source_segment_id, query_segment_id)
+      returned_probs = AttenProbs(per_dim_scale, source_padding,
+                                  concated_source_vecs, query_vec,
+                                  per_step_source_padding, source_segment_id,
+                                  query_segment_id)
       returned_probs.set_shape(per_step_source_padding.shape)
 
       # => [n, source_batch, time].
@@ -889,7 +980,7 @@ class DotProductAttention(BaseAttentionLayer):
 
       # Apply dropout to weights if applicable.
       if not p.is_eval:
-        probs = _ApplyAttentionDropout(p, probs, step_state, self._prng_seed)
+        probs = _ApplyAttentionDropout(p, probs, global_step)
 
       # Weight each frame with the probability and sum them.
       # [source_batch, n, time] * [source_batch, time, context_dim]
@@ -910,11 +1001,13 @@ class DotProductAttention(BaseAttentionLayer):
                  source_contexts,
                  source_padding,
                  source_segment_id=None):
-    """Packs source vectors. Does not change attention state.
+    """Packs source vectors.
+
+    Does not change attention state.
 
     Args:
-      theta: A `.NestedMap` object containing weights' values of this
-        layer and its children layers.
+      theta: A `.NestedMap` object containing weights' values of this layer and
+        its children layers.
       source_vecs: A tensor of shape [time, source_batch, source_dim].
       source_contexts: A tensor of shape [time, source_batch, context_dim].
       source_padding: A tensor of shape [time, source_batch].
@@ -945,7 +1038,7 @@ class DotProductAttention(BaseAttentionLayer):
         # [time, batch_size].
         source_segment_id=source_segment_id)
 
-  def ZeroAttentionState(self, source_seq_length, decoder_batch_size):
+  def ZeroAttentionState(self, source_length, decoder_batch_size):
     p = self.params
     # No states to keep track of currently.
     return tf.zeros([decoder_batch_size, 1], dtype=p.dtype)
@@ -956,25 +1049,22 @@ class DotProductAttention(BaseAttentionLayer):
                                      query_vec,
                                      attention_state=None,
                                      per_step_source_padding=None,
-                                     step_state=None,
                                      query_segment_id=None):
     """Computes the context vector given the current query output.
 
     Args:
-      theta: A `.NestedMap` object containing weights' values of this
-        layer and its children layers.
+      theta: A `.NestedMap` object containing weights' values of this layer and
+        its children layers.
       packed_src: A `.NestedMap` object returned by PackSource or
         InitForSourcePacked.
-      query_vec: a tensor of shape [target_batch, query_dim], where
-        target_batch = n * source_batch (e.g., n = num_hyps_per_beam in
-        beamsearch). Along the target_batch dimension, there are n groups of
-        consecutive rows, each group containing source_batch rows.
+      query_vec: a tensor of shape [target_batch, query_dim], where target_batch
+        = n * source_batch (e.g., n = num_hyps_per_beam in beamsearch). Along
+        the target_batch dimension, there are n groups of consecutive rows, each
+        group containing source_batch rows.
       attention_state: previous attention state. It is not used in
-          AdditiveAttention, and is simply passed through.
-      per_step_source_padding: Source sequence padding to apply at this step.
-        If not None, it should be of shape [target_batch, source_seq_length].
-      step_state: A `.NestedMap` containing 'global_step' and 'time_step'.
-        Required for deterministic dropout.
+        AdditiveAttention, and is simply passed through.
+      per_step_source_padding: Source sequence padding to apply at this step. If
+        not None, it should be of shape [target_batch, source_length].
       query_segment_id: Query segment id with shape [target_batch].
 
     Returns:
@@ -1010,7 +1100,7 @@ class DotProductAttention(BaseAttentionLayer):
     ctx_vec, prob = self._ctx_vec(
         ScaleFn(theta.per_dim_scale), source_padding, source_segment_id,
         concated_source_vecs, concated_source_contexts, query_vec,
-        query_segment_id, per_step_source_padding, step_state)
+        query_segment_id, per_step_source_padding, theta.global_step)
     return ctx_vec, prob, attention_state
 
 
@@ -1172,11 +1262,13 @@ class MultiHeadedAttention(BaseAttentionLayer, quant_utils.QuantizableLayer):
                  source_contexts,
                  source_padding,
                  source_segment_id=None):
-    """Packs source vectors. Does not change attention state.
+    """Packs source vectors.
+
+    Does not change attention state.
 
     Args:
-      theta: A `.NestedMap` object containing weights' values of this
-        layer and its children layers.
+      theta: A `.NestedMap` object containing weights' values of this layer and
+        its children layers.
       source_vecs: A tensor of shape [time, source_batch, source_dim].
       source_contexts: A tensor of shape [time, source_batch, context_dim].
       source_padding: A tensor of shape [time, source_batch].
@@ -1253,9 +1345,10 @@ class MultiHeadedAttention(BaseAttentionLayer, quant_utils.QuantizableLayer):
                 tf.reshape(source_segment_id, [time_steps, batch_size, 1]),
                 [1, 1, num_heads]), [time_steps, batch_size * num_heads])
 
-      return self.atten.PackSource(
-          theta.atten, source_projected, source_contexts_reshaped,
-          source_padding_replicated, source_segment_id_repl)
+      return self.atten.PackSource(theta.atten, source_projected,
+                                   source_contexts_reshaped,
+                                   source_padding_replicated,
+                                   source_segment_id_repl)
 
   @py_utils.NameScopeDecorator('MultiHeadedAttention/ExtendSourcePacked')
   def ExtendSourcePacked(self,
@@ -1269,8 +1362,8 @@ class MultiHeadedAttention(BaseAttentionLayer, quant_utils.QuantizableLayer):
     """Extend cached source_vecs and source_contexts by one more timestep.
 
     Args:
-      theta: A `.NestedMap` object containing weights' values of this
-        layer and its children layers.
+      theta: A `.NestedMap` object containing weights' values of this layer and
+        its children layers.
       new_source_vecs: A tensor of shape [source_batch, source_dim].
       new_source_contexts: A tensor of shape [source_batch, context_dim].
         new_source_vecs and new_source_contexts are source_vecs and
@@ -1282,32 +1375,32 @@ class MultiHeadedAttention(BaseAttentionLayer, quant_utils.QuantizableLayer):
       cached_packed_src: a `.NestedMap` object, containing already preprocessed
         source_vecs and source_contexts for the previous t-1 steps. To support
         tf.while_loop on TPU (satisfying static shape requirement), instead of
-        using tf.concat to update the cached vectors, the time dimension of
-        each cached vector is fixed as the max_sequence_length and inplace
+        using tf.concat to update the cached vectors, the time dimension of each
+        cached vector is fixed as the max_sequence_length and inplace
         update op is used to update the information for each time step:
         * source_vecs: A tensor of shape [max_sequence_length, source_batch,
-          hidden_dim]. [:t, :, :] contains valid preprocessed source_vecs in
-          the previous t - 1 timesteps, the rests are invalid data.
+          hidden_dim]. [:t, :, :] contains valid preprocessed source_vecs in the
+            previous t - 1 timesteps, the rests are invalid data.
         * source_contexts: A tensor of shape [max_sequence_length, source_batch,
-          hidden_dim]. [:t, :, :] contains valid preprocessed source_contexts
-          in the previous t - 1 timesteps, the rests are invalid data.
+          hidden_dim]. [:t, :, :] contains valid preprocessed source_contexts in
+            the previous t - 1 timesteps, the rests are invalid data.
         * source_padding: If not None, a tensor of shape [max_sequence_length,
-          source_batch, num_heads]. [:t, :, :] contains cached
-          source padding for the previous t - 1 timesteps, the rests are
-          invalid data.
+          source_batch, num_heads]. [:t, :, :] contains cached source padding
+            for the previous t - 1 timesteps, the rests are invalid data.
         * source_segment_id: If not None, a tensor of shape
           [max_sequence_length, source_batch, num_heads]. [:t, :, :] contains
-          cached source segment id for the previous t - 1 timesteps, the rests
-          are invalid data.
+            cached source segment id for the previous t - 1 timesteps, the rests
+            are invalid data.
         When t is None (not running on TPU or the while loop is unrolled):
         * source_vecs: A tensor of shape [t - 1, source_batch, hidden_dim].
         * source_contexts: A tensor of shape [t - 1, source_batch, hidden_dim].
         * source_padding: If not None, a tensor of shape [t - 1, source_batch,
           num_heads], cached source padding for the previous t - 1 timesteps.
-        * source_segment_id: If not None, a tensor of shape
-          [t - 1, source_batch, num_heads], cached source segment id for the
-          previous t - 1 timesteps.
+        * source_segment_id: If not None, a tensor of shape [t - 1,
+          source_batch, num_heads], cached source segment id for the previous t
+          - 1 timesteps.
       t: a scalar, the current time step, 0-based.
+
     Returns:
       Extended cached source_vecs, source_contexts, source_paddings, and
       source_segment_ids. The time dimension of each cached state is fixed:
@@ -1329,8 +1422,8 @@ class MultiHeadedAttention(BaseAttentionLayer, quant_utils.QuantizableLayer):
     if new_source_paddings is None:
       new_source_paddings = tf.zeros([batch_size], dtype=new_source_vecs.dtype)
     if new_source_segment_ids is None:
-      new_source_segment_ids = tf.zeros(
-          [batch_size], dtype=new_source_vecs.dtype)
+      new_source_segment_ids = tf.zeros([batch_size],
+                                        dtype=new_source_vecs.dtype)
     processed_packed_src = self.InitForSourcePacked(
         theta, tf.expand_dims(new_source_vecs, 0),
         tf.expand_dims(new_source_contexts, 0),
@@ -1353,9 +1446,9 @@ class MultiHeadedAttention(BaseAttentionLayer, quant_utils.QuantizableLayer):
     return extended_packed_src
 
   @py_utils.NameScopeDecorator('MultiHeadedAttention/ZeroAttentionState')
-  def ZeroAttentionState(self, source_seq_length, decoder_batch_size):
+  def ZeroAttentionState(self, source_length, decoder_batch_size):
     zero_att_state = self.atten.ZeroAttentionState(
-        source_seq_length, decoder_batch_size * self.params.num_attention_heads)
+        source_length, decoder_batch_size * self.params.num_attention_heads)
     # [batch * num_heads, length] => [batch, num_heads * length].
     zero_att_state = _RecursiveReshape(zero_att_state, [decoder_batch_size, -1])
     return zero_att_state
@@ -1368,31 +1461,26 @@ class MultiHeadedAttention(BaseAttentionLayer, quant_utils.QuantizableLayer):
                                      query_vec,
                                      attention_state=None,
                                      per_step_source_padding=None,
-                                     step_state=None,
                                      query_segment_id=None):
     """Computes the context vector given the current query output.
 
     Args:
-      theta: A `.NestedMap` object containing weights' values of this
-        layer and its children layers.
+      theta: A `.NestedMap` object containing weights' values of this layer and
+        its children layers.
       packed_src: A `.NestedMap` object returned by PackSource or
         InitForSourcePacked.
       query_vec: a tensor of shape [target_batch, query_dim].
       attention_state: previous attention state. It is not used in
-          AdditiveAttention, and is simply passed through.
-      per_step_source_padding: Source sequence padding to apply at this step.
-        If not None, it should be of shape [target_batch_size,
-        source_seq_length].
-      step_state: A `.NestedMap` containing 'global_step' and 'time_step'.
-        Required for deterministic dropout.
+        AdditiveAttention, and is simply passed through.
+      per_step_source_padding: Source sequence padding to apply at this step. If
+        not None, it should be of shape [target_batch_size, source_length].
       query_segment_id: a tensor of shape [target_batch].
-
     Note: concated_source_vecs are the vectors that are used to compute the
-    attention score between the query_vec and each concated_source_vec.
-    The concated_source_contexts are the vectors that compose the result.
-    The attention context vector is computed as a weighted average of the
-    concated_source_contexts, using the scores that were computed using
-    concated_source_vecs.
+      attention score between the query_vec and each concated_source_vec. The
+      concated_source_contexts are the vectors that compose the result. The
+      attention context vector is computed as a weighted average of the
+      concated_source_contexts, using the scores that were computed using
+      concated_source_vecs.
 
     Returns:
       A tuple of 3 elements.
@@ -1445,17 +1533,20 @@ class MultiHeadedAttention(BaseAttentionLayer, quant_utils.QuantizableLayer):
                                         [batch_size * num_heads, -1])
     ctx_vec, prob, att_state = self.atten.ComputeContextVectorWithSource(
         theta.atten, packed_src, query_vec_projected, attention_state,
-        per_step_source_padding, step_state, query_segment_id)
+        per_step_source_padding, query_segment_id)
     ctx_vec = tf.reshape(ctx_vec, [batch_size, -1])
     if p.enable_ctx_post_proj:
       ctx_vec = fns.qbatchmatmul(
           ctx_vec, fns.qweight(theta.ctx_post_proj), qt='ctx_post_proj_matmul')
       ctx_vec = fns.qadd(
           ctx_vec, fns.qweight(theta.ctx_post_proj_b), qt='ctx_post_proj_add')
+
+    # explicitly name this tensor for potential future reference
+    multi_headed_atten_prob = tf.reshape(
+        prob, [batch_size, num_heads, -1], name='multi_headed_atten_prob')
     # TODO(laurenzo): Use a better named range function (we want to represent
     # 0..1 probs).
-    prob = self.QRSoftmax(
-        tf.reduce_mean(tf.reshape(prob, [batch_size, num_heads, -1]), 1))
+    prob = self.QRSoftmax(tf.reduce_mean(multi_headed_atten_prob, 1))
     att_state = _RecursiveReshape(att_state, [batch_size, -1])
 
     return ctx_vec, prob, att_state
@@ -1467,12 +1558,12 @@ class MultiHeadedAttention(BaseAttentionLayer, quant_utils.QuantizableLayer):
     """Computes the context vector given the attention probailities.
 
     Args:
-      theta: A `.NestedMap` object containing weights' values of this
-        layer and its children layers.
-      packed_context: Concated source contexts with shape [
-        batch_size * num_heads, time, context_dim // num_heads].
-      atten_probs: The attention probability vector:
-        [batch_size * num_heads, time].
+      theta: A `.NestedMap` object containing weights' values of this layer and
+        its children layers.
+      packed_context: Concated source contexts with shape [ batch_size *
+        num_heads, time, context_dim // num_heads].
+      atten_probs: The attention probability vector: [batch_size * num_heads,
+        time].
 
     Returns:
       The attention context vector: [target_batch, source_dim]
@@ -1537,24 +1628,20 @@ class MultiHeadedAttention(BaseAttentionLayer, quant_utils.QuantizableLayer):
                                            query_vec,
                                            attention_state=None,
                                            per_step_source_padding=None,
-                                           step_state=None,
                                            query_segment_id=None):
     """Same as the ComputeContextVectorWithSource api above, except values ...
 
     in source_vecs, source_contexts and source_padding are ordered differently.
 
     Args:
-      theta: A `.NestedMap` object containing weights' values of this
-        layer and its children layers.
+      theta: A `.NestedMap` object containing weights' values of this layer and
+        its children layers.
       cached_src: A `.NestedMap` object returned by ExtendSourcePacked.
       query_vec: a tensor of shape [target_batch, query_dim].
       attention_state: previous attention state. It is not used in
-          AdditiveAttention, and is simply passed through.
-      per_step_source_padding: Source sequence padding to apply at this step.
-        If not None, it should be of shape [target_batch_size,
-        source_seq_length].
-      step_state: A `.NestedMap` containing 'global_step' and 'time_step'.
-        Required for deterministic dropout.
+        AdditiveAttention, and is simply passed through.
+      per_step_source_padding: Source sequence padding to apply at this step. If
+        not None, it should be of shape [target_batch_size, source_length].
       query_segment_id: a tensor of shape [target_batch].
 
     Returns:
@@ -1565,7 +1652,7 @@ class MultiHeadedAttention(BaseAttentionLayer, quant_utils.QuantizableLayer):
     """
     return self.ComputeContextVectorWithSource(
         theta, self.PackCachedSource(cached_src), query_vec, attention_state,
-        per_step_source_padding, step_state, query_segment_id)
+        per_step_source_padding, query_segment_id)
 
 
 class LocationSensitiveAttention(BaseAttentionLayer):
@@ -1682,16 +1769,17 @@ class LocationSensitiveAttention(BaseAttentionLayer):
       def CollapseOutDim(x):
         return tf.reshape(x, [-1, tf.shape(x)[-1]])
 
+      # => [sl, sb, hd]
+      location_feats = tf.transpose(location_feats, [2, 0, 1])
       location_hidden = fns.qmatmul(
           CollapseOutDim(location_feats), location_var, qt='logits_mul')
 
-      sl = tf.shape(location_feats)[1]
-      tb = tf.shape(location_feats)[0]
-      hd = tf.shape(location_var)[1]
-      location_hidden = tf.reshape(location_hidden, [tb, sl, hd])
-      location_hidden = tf.transpose(location_hidden, [1, 0, 2])
-      sb = tf.shape(query_vec_reshaped)[2]
-      bs_mult = tf.shape(query_vec_reshaped)[1]
+      sl = py_utils.GetShape(location_feats)[0]
+      tb = py_utils.GetShape(location_feats)[1]
+      hd = py_utils.GetShape(location_var)[1]
+      location_hidden = tf.reshape(location_hidden, [sl, tb, hd])
+      sb = py_utils.GetShape(query_vec_reshaped)[2]
+      bs_mult = py_utils.GetShape(query_vec_reshaped)[1]
       location_hidden = tf.reshape(location_hidden, [sl, bs_mult, sb, hd])
 
       # Shape of summed is [sl, tb/sb, sb, hidden_dim].
@@ -1706,7 +1794,7 @@ class LocationSensitiveAttention(BaseAttentionLayer):
           tf.reshape(summed, [-1, p.hidden_dim]),
           tf.reshape(hidden_v, [p.hidden_dim, 1]),
           qt='logits')
-      logits = tf.reshape(logits, tf.shape(summed)[:3])
+      logits = tf.reshape(logits, py_utils.GetShape(summed)[:3])
       return logits
 
     @_ConditionalDefun(
@@ -1722,7 +1810,7 @@ class LocationSensitiveAttention(BaseAttentionLayer):
         concated_source_vecs: Tensor of shape [sl, batch, dim]
         query_vec_transformed: Tensor of shape [batch, dim]
         hidden_v: Tensor of shape [dim]
-        location_feats: Tensor of shape [batch, sl, location_feature_dim]
+        location_feats: Tensor of shape [batch, location_feature_dim, sl]
         location_var: Tensor of shape [location_feature_dim, dim]
 
       Returns:
@@ -1733,8 +1821,8 @@ class LocationSensitiveAttention(BaseAttentionLayer):
         return tf.reshape(x, [-1, tf.shape(x)[-1]])
 
       fns = self.fns
-      # => [sl, batch, hd]
-      location_feats = tf.transpose(location_feats, [1, 0, 2])
+      # => [sl, sb, hd]
+      location_feats = tf.transpose(location_feats, [2, 0, 1])
       location_hidden = fns.qmatmul(
           CollapseOutDim(location_feats), location_var, qt='logits_mul')
       sl = tf.shape(location_feats)[0]
@@ -1758,8 +1846,7 @@ class LocationSensitiveAttention(BaseAttentionLayer):
           tf.reshape(summed, [-1, p.hidden_dim]),
           tf.reshape(hidden_v, [p.hidden_dim, 1]),
           qt='logits')
-      logits = tf.reshape(logits, tf.shape(summed)[:2])
-      # ==> of shape [sl, tb]
+      logits = tf.reshape(logits, py_utils.GetShape(summed)[:2])
       return logits
 
     def Atten(hidden_var, query_var, source_padding, concated_source_vecs,
@@ -1767,34 +1854,19 @@ class LocationSensitiveAttention(BaseAttentionLayer):
               location_filter_var, location_var, per_step_source_padding):
       """Computes the attention context vector."""
       p = self.params
-      # attention_state shape [batch, slen, len(p.location_features)]
+      # attention_state shape [batch, len(p.location_features), slen]
       # it contains previous and accumulated attention probabilites.
-      attention_state = py_utils.HasShape(
-          attention_state, [-1, -1, len(p.location_features)])
+      attention_state = py_utils.HasShape(attention_state,
+                                          [-1, len(p.location_features), -1])
 
       fns = self.fns
-      if p.dtype != tf.float32:
-        location_feats = fns.qconv1d(
-            tf.cast(attention_state, tf.float32),
-            tf.cast(location_filter_var, tf.float32),
-            1,
-            'SAME',
-            data_format='NHWC',
-            qt='atten_conv')
-        location_feats = tf.cast(location_feats, p.dtype)
-      else:
-        location_feats = fns.qconv1d(
-            attention_state,
-            location_filter_var,
-            1,
-            'SAME',
-            data_format='NHWC',
-            qt='atten_conv')
+      location_feats = self._ApplyConv(attention_state, location_filter_var)
+
       # concated_source_vecs is of shape [sl, sb, dims]
       # concated_source_contexts is of shape [sb, sl, context_dim]
       # query_vec is of shape [tb, dims]
-      sb = tf.shape(concated_source_vecs)[1]
-      tb = tf.shape(query_vec)[0]
+      sb = py_utils.GetShape(concated_source_vecs)[1]
+      tb = py_utils.GetShape(query_vec)[0]
       multiplier = tb // sb
       # concated_source_vecs is reshaped to [sl, 1, sb, hidden_dims]
       concated_source_vecs = tf.expand_dims(concated_source_vecs, 1)
@@ -1845,29 +1917,13 @@ class LocationSensitiveAttention(BaseAttentionLayer):
       """
       del per_step_source_padding
       p = self.params
-      # attention_state shape [batch, slen, len(p.location_features)]
+      # attention_state shape [batch, len(p.location_features), slen]
       # it contains previous and accumulated attention probabilites.
-      attention_state = py_utils.HasShape(
-          attention_state, [-1, -1, len(p.location_features)])
+      attention_state = py_utils.HasShape(attention_state,
+                                          [-1, len(p.location_features), -1])
 
       fns = self.fns
-      if p.dtype != tf.float32:
-        location_feats = fns.qconv1d(
-            tf.cast(attention_state, tf.float32),
-            tf.cast(location_filter_var, tf.float32),
-            1,
-            'SAME',
-            data_format='NHWC',
-            qt='atten_conv')
-        location_feats = tf.cast(location_feats, p.dtype)
-      else:
-        location_feats = fns.qconv1d(
-            attention_state,
-            location_filter_var,
-            1,
-            'SAME',
-            data_format='NHWC',
-            qt='atten_conv')
+      location_feats = self._ApplyConv(attention_state, location_filter_var)
       query_vec_transformed = fns.qmatmul(
           query_vec, query_var, qt='atten_matmul')
       # logits is of shape [sl, sb]
@@ -1906,6 +1962,34 @@ class LocationSensitiveAttention(BaseAttentionLayer):
 
     self._encode_source = EncodeSource
 
+  def _ApplyConv(self, attention_state, location_filter_var):
+    """Applies the convolution on attention state."""
+    p = self.params
+    fns = self.fns
+    attention_state_f32 = attention_state
+    location_filter_var_f32 = location_filter_var
+    if p.dtype != tf.float32:
+      attention_state_f32 = tf.cast(attention_state, tf.float32)
+      location_filter_var_f32 = tf.cast(location_filter_var, tf.float32)
+    data_format = 'NCW'
+    if not py_utils.use_xla():
+      # NCW format is not supported on CPU.
+      attention_state_f32 = tf.transpose(attention_state_f32, [0, 2, 1])
+      data_format = 'NWC'
+    location_feats = fns.qconv1d(
+        attention_state_f32,
+        location_filter_var_f32,
+        1,
+        'SAME',
+        data_format=data_format,
+        qt='atten_conv')
+    if not py_utils.use_xla():
+      location_feats = tf.transpose(location_feats, [0, 2, 1])
+    if p.dtype != tf.float32:
+      location_feats = tf.cast(location_feats, p.dtype)
+    # [sb, hd, sl]
+    return location_feats
+
   def PackSource(self,
                  theta,
                  source_vecs,
@@ -1931,22 +2015,18 @@ class LocationSensitiveAttention(BaseAttentionLayer):
         # [time, batch_size].
         source_segment_id=source_segment_id)
 
-  def ZeroAttentionState(self, source_seq_length, decoder_batch_size):
+  def ZeroAttentionState(self, source_length, decoder_batch_size):
     p = self.params
     dtype = p.dtype.real_dtype
     num_features = len(p.location_features)
     with tf.name_scope(p.name):
       state = tf.concat([
-          tf.ones([decoder_batch_size, 1, num_features], dtype=dtype),
-          tf.zeros(
-              [decoder_batch_size, source_seq_length - 1, num_features],
-              dtype=dtype)
-      ], 1)
+          tf.ones([decoder_batch_size, num_features, 1], dtype=dtype),
+          tf.zeros([decoder_batch_size, num_features, source_length - 1],
+                   dtype=dtype)
+      ], 2)
 
       state = self.QRSoftmax(state)
-      # Having the last dim being 1 or 2 is very inefficient on tpu, and hence
-      # we reshape to combine the last two dims.
-      state = tf.reshape(state, [decoder_batch_size, -1])
       return state
 
   def ComputeContextVectorWithSource(self,
@@ -1955,36 +2035,33 @@ class LocationSensitiveAttention(BaseAttentionLayer):
                                      query_vec,
                                      attention_state=None,
                                      per_step_source_padding=None,
-                                     step_state=None,
                                      query_segment_id=None):
     """Computes the context vector given the current query output.
 
     Args:
-      theta: A `.NestedMap` object containing weights' values of this
-        layer and its children layers.
+      theta: A `.NestedMap` object containing weights' values of this layer and
+        its children layers.
       packed_src: A `.NestedMap` object returned by PackSource or
         InitForSourcePacked.
       query_vec: a tensor of shape [batch_size, query_dim].
-      attention_state: If
-        `params().location_features == ['PREV_PROBS', 'CUMULATIVE_PROBS']`,
-        then `attention_state` is a tensor of shape [batch_size, src_len * 2].
+      attention_state: If `params().location_features == ['PREV_PROBS',
+        'CUMULATIVE_PROBS']`, then `attention_state` is a tensor of shape
+        [batch_size, 2, src_len].
 
-        - attention_state[:, :, 0] contains previous attention probabilities
-        - attention_state[:, :, 1] contains a sum over previous timesteps of
+        - attention_state[:, 0, :] contains previous attention probabilities.
+        - attention_state[:, 1, :] contains a sum over previous timesteps of
           attention probabilities.
-      per_step_source_padding: Source sequence padding to apply at this step.
-        If not None, it should be of shape [target_batch_size,
-        source_seq_length].
-      step_state: A `.NestedMap` containing 'global_step' and 'time_step'.
-        Required for deterministic dropout.
+
+      per_step_source_padding: Source sequence padding to apply at this step. If
+        not None, it should be of shape [target_batch_size, source_length].
       query_segment_id: Query segment id with shape [batch_size].
 
     Note: concated_source_vecs are the vectors that are used to compute the
-    attention score between the query_vec and each concated_source_vec.
-    The concated_source_contexts are the vectors that compose the result.
-    The attention context vector is computed as a weighted average of the
-    concated_source_contexts, using the scores that were computed using
-    concated_source_vecs.
+      attention score between the query_vec and each concated_source_vec. The
+      concated_source_contexts are the vectors that compose the result. The
+      attention context vector is computed as a weighted average of the
+      concated_source_contexts, using the scores that were computed using
+      concated_source_vecs.
 
     Returns:
       A tuple of 3 elements.
@@ -2002,42 +2079,34 @@ class LocationSensitiveAttention(BaseAttentionLayer):
     source_padding = packed_src.source_padding
     if p.same_batch_size:
       assert per_step_source_padding is None
-    query_batch_size = tf.shape(query_vec)[0]
-    source_seq_length = tf.shape(source_padding)[0]
+    query_batch_size = py_utils.GetShape(query_vec)[0]
+    source_length = py_utils.GetShape(source_padding)[0]
     if per_step_source_padding is None:
       zero = tf.constant(0.0, dtype=query_vec.dtype)
-      per_step_source_padding = tf.fill([query_batch_size, source_seq_length],
-                                        zero)
+      per_step_source_padding = tf.fill([query_batch_size, source_length], zero)
     per_step_source_padding = py_utils.HasShape(
-        per_step_source_padding, [query_batch_size, source_seq_length])
+        per_step_source_padding, [query_batch_size, source_length])
 
     hidden = py_utils.AddPerStepVN(p, theta.hidden_var)
     query = py_utils.AddPerStepVN(p, theta.query_var)
     location_filter = py_utils.AddPerStepVN(p, theta.location_filter_var)
     location = py_utils.AddPerStepVN(p, theta.location_var)
 
-    bs = tf.shape(attention_state)[0]
-    num_location_features = len(p.location_features)
-    attention_state = tf.reshape(attention_state,
-                                 [bs, -1, num_location_features])
-
-    ctx_vec, prob = self._ctx_vec(
-        hidden, query, source_padding, concated_source_vecs,
-        concated_source_contexts, query_vec, attention_state, location_filter,
-        location, per_step_source_padding)
+    ctx_vec, prob = self._ctx_vec(hidden, query, source_padding,
+                                  concated_source_vecs,
+                                  concated_source_contexts, query_vec,
+                                  attention_state, location_filter, location,
+                                  per_step_source_padding)
 
     new_feats = {'PREV_PROBS': prob}
     if 'CUMULATIVE_PROBS' in p.location_features:
       # Quantization must match the _PaddedSoftmax method.
+      cum_prob_index = p.location_features.index('CUMULATIVE_PROBS')
       new_feats['CUMULATIVE_PROBS'] = self.QRSoftmax(
-          tf.add(
-              prob,
-              attention_state[:, :,
-                              p.location_features.index('CUMULATIVE_PROBS')]),
+          tf.add(prob, attention_state[:, cum_prob_index, :]),
           narrow_to_asym_bit_depth=True)
-    new_attention_state = tf.stack(
-        [new_feats[f] for f in p.location_features], axis=2)
-    new_attention_state = tf.reshape(new_attention_state, [bs, -1])
+    new_attention_state = tf.stack([new_feats[f] for f in p.location_features],
+                                   axis=1)
     return ctx_vec, prob, new_attention_state
 
 
@@ -2054,8 +2123,8 @@ def MergeSourcePaddingWithPerStepSourcePadding(source_padding,
     A tensor of shape [tb, sl].
   """
   # source_padding is of shape [sl, sb].
-  sl = tf.shape(source_padding)[0]
-  sb = tf.shape(source_padding)[1]
+  sl = py_utils.GetShape(source_padding)[0]
+  sb = py_utils.GetShape(source_padding)[1]
 
   if per_step_source_padding is None:
     zero = tf.constant(0.0, dtype=source_padding.dtype)
@@ -2186,19 +2255,6 @@ class MonotonicAttention(BaseAttentionLayer):
           collections=['MonotonicAttention_vars'])
       self.CreateVariable('hidden_bias_var', pc)
 
-      # Create seeds for stateless random number generator.
-      random_seed_dtype = tf.int32
-      _, self._step_counter = py_utils.CreateVariable(
-          name='atten_step_counter',
-          params=py_utils.WeightParams([], py_utils.WeightInit.Constant(0),
-                                       random_seed_dtype),
-          trainable=False)
-      vname = self._step_counter.name
-      self._prng_seed = tf.constant(
-          py_utils.GenerateSeedFromName(vname), dtype=random_seed_dtype)
-      if p.random_seed:
-        self._prng_seed += p.random_seed
-
     def EncodeSource(src_w, vecs, ctxs):
       time, batch = py_utils.GetShape(vecs, 2)
       ctxs = py_utils.HasShape(ctxs, [time, batch, -1])
@@ -2234,19 +2290,16 @@ class MonotonicAttention(BaseAttentionLayer):
         # [time, batch_size].
         source_segment_id=source_segment_id)
 
-  def ZeroAttentionState(self, source_seq_length, decoder_batch_size):
+  def ZeroAttentionState(self, source_length, decoder_batch_size):
     p = self.params
     dtype = p.dtype
     with tf.name_scope(p.name):
       # Set initial previous attention to [1, 0, ... 0] to avoid special-casing
       emit_probs = tf.one_hot(
           tf.zeros((decoder_batch_size,), dtype=tf.int32),
-          source_seq_length,
+          source_length,
           dtype=dtype)
-      return py_utils.NestedMap(
-          emit_probs=emit_probs,
-          # stateless.stateless_random_normal() requires seeds of shape [2].
-          random_seed=tf.stack([self._prng_seed, self._step_counter]))
+      return py_utils.NestedMap(emit_probs=emit_probs)
 
   def ComputeProbabilities(self, theta, concated_source_vecs,
                            merged_source_padding, query_vec, attention_state):
@@ -2319,27 +2372,25 @@ class MonotonicAttention(BaseAttentionLayer):
         p_choose_i = tf.where(merged_source_padding > 0.0,
                               tf.zeros_like(p_choose_i), p_choose_i)
         # Compute probability distribution assuming hard probabilities
-        probs = tf.contrib.seq2seq.monotonic_attention(
-            p_choose_i, previous_attention, 'hard')
+        probs = MonotonicAttentionProb(p_choose_i, previous_attention, 'hard')
       else:
         # Compute pre-sigmoid noise.
-        activation_noise = tf.contrib.stateless.stateless_random_normal(
+        activation_noise = tf.random.stateless_normal(
             py_utils.GetShape(logits),
-            attention_state.random_seed,
+            py_utils.GenerateStepSeedPair(p, theta.global_step),
             dtype=logits.dtype)
         # Compute sigmoid probabilities.
-        p_choose_i = tf.nn.sigmoid(
-            logits + self.params.pre_sigmoid_noise * activation_noise)
+        p_choose_i = tf.nn.sigmoid(logits + self.params.pre_sigmoid_noise *
+                                   activation_noise)
         # Never choose padded values.
         p_choose_i = tf.where(merged_source_padding > 0,
                               tf.zeros_like(p_choose_i), p_choose_i)
         # Compute attention distribution
-        probs = tf.contrib.seq2seq.monotonic_attention(
-            p_choose_i, previous_attention, 'parallel')
+        probs = MonotonicAttentionProb(p_choose_i, previous_attention,
+                                       'parallel')
 
     # [tb, sl].
-    return probs, py_utils.NestedMap(
-        emit_probs=probs, random_seed=attention_state.random_seed)
+    return probs, py_utils.NestedMap(emit_probs=probs)
 
   def ComputeContextVectorWithSource(self,
                                      theta,
@@ -2347,30 +2398,25 @@ class MonotonicAttention(BaseAttentionLayer):
                                      query_vec,
                                      attention_state,
                                      per_step_source_padding=None,
-                                     step_state=None,
                                      query_segment_id=None):
     """Computes the context vector given the current query output.
 
     Args:
-      theta: A `.NestedMap` object containing weights' values of this
-        layer and its children layers.
+      theta: A `.NestedMap` object containing weights' values of this layer and
+        its children layers.
       packed_src: A `.NestedMap` object returned by PackSource or
         InitForSourcePacked.
       query_vec: a tensor of shape [batch_size, query_dim].
       attention_state: The attention probs computed at the previous timestep.
-      per_step_source_padding: Source sequence padding to apply at this step.
-        If not None, it should be of shape [target_batch_size,
-        source_seq_length].
-      step_state: A `.NestedMap` containing 'global_step' and 'time_step'.
-        Required for deterministic dropout.
+      per_step_source_padding: Source sequence padding to apply at this step. If
+        not None, it should be of shape [target_batch_size, source_length].
       query_segment_id: a tensor of shape [batch_size].
-
     Note: concated_source_vecs are the vectors that are used to compute the
-    attention score between the query_vec and each concated_source_vec.
-    The concated_source_contexts are the vectors that compose the result.
-    The attention context vector is computed as a weighted average of the
-    concated_source_contexts, using the scores that were computed using
-    concated_source_vecs.
+      attention score between the query_vec and each concated_source_vec. The
+      concated_source_contexts are the vectors that compose the result. The
+      attention context vector is computed as a weighted average of the
+      concated_source_contexts, using the scores that were computed using
+      concated_source_vecs.
 
     Returns:
       A tuple of 3 elements.
@@ -2409,11 +2455,6 @@ class MonotonicAttention(BaseAttentionLayer):
 
     return ctx_vec, probs, new_state
 
-  def PostTrainingStepUpdate(self, global_step):
-    """Update self._step_counter with the global_step value."""
-    return self._step_counter.assign(
-        tf.cast(global_step, self._step_counter.dtype))
-
 
 class GmmMonotonicAttention(BaseAttentionLayer):
   """A GMM-based monotonic attention module.
@@ -2428,11 +2469,26 @@ class GmmMonotonicAttention(BaseAttentionLayer):
     p = super(GmmMonotonicAttention, cls).Params()
     p.Define('source_dim', 0, 'Number of source nodes.')
     p.Define('query_dim', 0, 'Number of query nodes.')
-    p.Define('gmm_mlp_hidden_dim', 128,
+    p.Define('hidden_dim', 128,
              'Number of hidden units for the MLP that predicts GMM params.')
     p.Define('max_offset', -1,
              'Max offset to move attention pointer, Enabled only when > 0.')
     p.Define('num_mixtures', 5, 'Number of location GMM components.')
+    p.Define(
+        'normalize_probs', False,
+        'Whether to normalize probabilities computed by GMM. Otherwise, '
+        'the attention weights (i.e. probabilities) may not add up to '
+        '1.0.')
+
+    # TODO(oday): Remove this after all experiments had been migrated.
+    p.Define(
+        'use_atten_v2', True,
+        'Whether to use AttenV2 inner function. This flag should be False '
+        'in old checkpoints because the loss calculation may be affected.')
+
+    # TODO(ngyuzh): find a good initialize for both TTS and ASR. Consider split
+    # the layer if it's very sensitive to the initialization
+    p.params_init = py_utils.WeightInit.Xavier(0.1)
     return p
 
   @base_layer.initializer
@@ -2443,32 +2499,140 @@ class GmmMonotonicAttention(BaseAttentionLayer):
     if p.atten_dropout_prob != 0:
       raise NotImplementedError('dropout is not supported.')
 
-    # TODO(ngyuzh): find a good initialize for both TTS and ASR.
-    # Consider split the layer if it's very sensitive to the initialization
-    # Compare Sigmoid and other activation functions.
+    # TODO(ngyuzh): Compare Sigmoid and other activation functions.
     with tf.variable_scope(p.name):
-      gmm_params = layers.FeedForwardNet.Params().Set(
+      ff_params = layers.FeedForwardNet.Params().Set(
           name=p.name,
           input_dim=p.query_dim,
-          hidden_layer_dims=[p.gmm_mlp_hidden_dim, p.num_mixtures * 3],
+          hidden_layer_dims=[p.hidden_dim, p.num_mixtures * 3],
           activation=['SIGMOID', 'NONE'],
-          params_init=py_utils.WeightInit.Xavier(0.1))
-      self.CreateChild('GMM', gmm_params)
+          params_init=p.params_init.Copy())
+      self.CreateChild('GMM', ff_params)
 
+      def ComputeProbsV2(encoder_positions, priors, means, variances):
+        """Computes the location GMM probabilities at all encoder positions.
+
+        Unlike `ComputeProbs(V1)`, this function assumes that the first 2
+        dimensions of `priors`, `means`, `variances`, and the return value:
+        `multiplier (target_batch / source_batch)` and `source_batch` are
+        transposed, and `encoder_positions` has only non-one dimensions.
+
+        Args:
+          encoder_positions: [source_batch, source_length]
+          priors: [multiplier, source_batch, num_mixtures]
+          means: [multiplier, source_batch, num_mixtures]
+          variances: [multiplier, source_batch, num_mixtures]
+
+        Returns:
+          Calculated probabilities: [multiplier, source_batch, source_length]
+        """
+        # [multiplier, source_batch, 1, num_mixtures]
+        priors = tf.expand_dims(priors, 2)
+        means = tf.expand_dims(means, 2)
+        variances = tf.expand_dims(variances, 2)
+        epsilon = 1e-8
+
+        # [source_batch, source_length, 1]
+        encoder_positions = tf.expand_dims(encoder_positions, 2)
+
+        # [multiplier, source_batch, source_length, num_mixtures]
+        probs = ((priors * tf.rsqrt(2 * np.pi * variances + epsilon)) *
+                 tf.exp(-(encoder_positions - means)**2 /
+                        (2 * variances + epsilon)))
+
+        # [multiplier, source_batch, source_length]
+        return tf.reduce_sum(probs, axis=3)
+
+      # TODO(oday): Remove this after all experiments had been migrated.
       # TODO(ngyuzh): change variance to scale to make it simpler.
-      def EvalGmmPdfs(encoder_positions, priors, means, variances):
-        """Evaluate the location GMMs on all encoder positions."""
+      def ComputeProbs(encoder_positions, priors, means, variances):
+        """Computes the location GMM probabilities at all encoder positions."""
         # encoder_positions: [batch, 1, timesteps, 1]
         # [batch, tb / sb, 1, num_mixtures]
         priors = tf.expand_dims(priors, 2)
         means = tf.expand_dims(means, 2)
         variances = tf.expand_dims(variances, 2)
         # [batch, tb / sb, timesteps, num_mixtures]
-        pdfs = ((priors * tf.rsqrt(2 * np.pi * variances + 1e-8)) * tf.exp(
-            -(encoder_positions - means)**2 / (2 * variances + 1e-8)))
-        # pdfs sized [batch, tb / sb, timesteps].
-        return tf.reduce_sum(pdfs, 3)
+        probs = priors * tf.rsqrt(2 * np.pi * variances + 1e-8) * tf.exp(
+            -(encoder_positions - means)**2 / (2 * variances + 1e-8))
+        # probs sized [batch, tb / sb, timesteps].
+        return tf.reduce_sum(probs, axis=3)
 
+      def AttenV2(source_padding, concated_source_vecs,
+                  concated_source_contexts, query_vec, priors, means, variances,
+                  encoder_positions, per_step_source_padding):
+        """Computes the attention context vector.
+
+        Args:
+          source_padding: [source_length, source_batch]
+          concated_source_vecs: [source_length, source_batch, hidden_dim]
+          concated_source_contexts: [source_batch, source_length, context_dim]
+          query_vec: [target_batch, query_dim]
+          priors: [target_batch, num_mixtures]
+          means: [target_batch, num_mixtures]
+          variances: [target_batch, num_mixtures]
+          encoder_positions: [source_batch, source_length]
+          per_step_source_padding: [target_batch, source_length]
+
+        Returns:
+          Following tensors:
+            context vector: [target_batch, context_dim]
+            attention probabilities: [target_batch, source_length]
+        """
+
+        # Note: shape [target_batch] can be converted to
+        # [multiplier, source_batch], not [source_batch, multiplier].
+        p = self.params
+        source_batch = tf.shape(concated_source_vecs)[1]
+        target_batch = tf.shape(query_vec)[0]
+        multiplier = target_batch // source_batch
+
+        # [multiplier, source_batch, num_mixtures]
+        priors = tf.reshape(priors, [multiplier, source_batch, p.num_mixtures])
+        means = tf.reshape(means, [multiplier, source_batch, p.num_mixtures])
+        variances = tf.reshape(variances,
+                               [multiplier, source_batch, p.num_mixtures])
+
+        # [multiplier, source_batch, source_length]
+        probs = ComputeProbsV2(encoder_positions, priors, means, variances)
+
+        # [source_batch, source_length]
+        source_padding = tf.transpose(source_padding)
+
+        # [multiplier, source_batch, source_length]
+        per_step_source_padding = tf.reshape(per_step_source_padding,
+                                             [multiplier, source_batch, -1])
+        source_padding += per_step_source_padding
+        source_padding = tf.minimum(source_padding, 1.0)
+
+        # [multiplier, source_batch, source_length]
+        probs *= (1.0 - source_padding)
+        if p.normalize_probs:
+          probs /= tf.maximum(
+              tf.reduce_sum(probs, axis=2, keepdims=True), 1e-12)
+        probs = py_utils.AddDebugTensor(probs, name='atten_probs')
+
+        # [multiplier, source_batch]
+        summary_utils.histogram('gmm_probs_norm', tf.reduce_sum(probs, axis=2))
+
+        # [source_batch, multiplier, source_length]
+        probs_transposed = tf.transpose(probs, [1, 0, 2])
+
+        # Matmul:
+        # [source_batch, multiplier, source_length]
+        # @ [source_batch, source_length, context_dim]
+        # -> [source_batch, multiplier, context_dim]
+        context_vector_transposed = tf.matmul(probs_transposed,
+                                              concated_source_contexts)
+
+        # [multiplier, source_batch, context_dim]
+        context_vector = tf.transpose(context_vector_transposed, [1, 0, 2])
+
+        # [target_batch, context_dim], [target_batch, source_length]
+        return (tf.reshape(context_vector, [target_batch, -1]),
+                tf.reshape(probs, [target_batch, -1]))
+
+      # TODO(oday): Remove this after all experiments had been migrated.
       # TODO(ngyuzh): remove unnecessary transpose.
       def Atten(source_padding, concated_source_vecs, concated_source_contexts,
                 query_vec, priors, means, variances, encoder_positions,
@@ -2487,7 +2651,7 @@ class GmmMonotonicAttention(BaseAttentionLayer):
         means = tf.reshape(means, [-1, multiplier, p.num_mixtures])
         variances = tf.reshape(variances, [-1, multiplier, p.num_mixtures])
 
-        probs = EvalGmmPdfs(encoder_positions, priors, means, variances)
+        probs = ComputeProbs(encoder_positions, priors, means, variances)
         # [sl, tb / sb, sb]
         probs = tf.reshape(tf.transpose(probs, [2, 0, 1]), [-1, multiplier, sb])
 
@@ -2498,6 +2662,11 @@ class GmmMonotonicAttention(BaseAttentionLayer):
         source_padding = tf.minimum(source_padding, 1.0)
 
         probs *= (1.0 - source_padding)
+        if p.normalize_probs:
+          probs /= tf.maximum(
+              tf.reduce_sum(probs, axis=0, keepdims=True), 1e-12)
+        summary_utils.histogram('gmm_probs_norm', tf.reduce_sum(probs, axis=0))
+
         probs = py_utils.AddDebugTensor(probs, name='atten_probs')
         probs = tf.transpose(tf.reshape(probs, [-1, tb]))
         # [tb/sb, sb, sl]
@@ -2510,7 +2679,7 @@ class GmmMonotonicAttention(BaseAttentionLayer):
         context_vector = tf.transpose(context_vector, [1, 0, 2])
         return tf.reshape(context_vector, [tb, -1]), probs
 
-      self._ctx_vec = Atten
+      self._ctx_vec = AttenV2 if p.use_atten_v2 else Atten
 
       def EncodeSource(vecs, ctxs):
         # TODO(ngyuzh): combine with content-base attention.
@@ -2533,28 +2702,30 @@ class GmmMonotonicAttention(BaseAttentionLayer):
       (concated_source_vecs, concated_source_contexts) = (
           self._encode_source(source_vecs, source_contexts))
     return py_utils.NestedMap(
-        # [time, batch_size, hidden_dim].
+        # [source_length, source_batch, hidden_dim].
         source_vecs=concated_source_vecs,
-        # [batch_size, time, context_dim].
+        # [source_batch, source_length, context_dim].
         # Note the mismatch between `source_vecs` and `source_contexts`. In
-        # `source_vecs`, time is the first dim, while it is the second dim in
-        # `source_contexts`.
+        # `source_vecs`, `source_length` is the first dim, while it is the
+        # second dim in `source_contexts`.
         source_contexts=concated_source_contexts,
-        # [time, batch_size].
+        # [source_length, source_batch].
         source_padding=source_padding,
-        # [time, batch_size].
+        # [source_length, source_batch].
         source_segment_id=source_segment_id)
 
-  def ZeroAttentionState(self, source_seq_length, decoder_batch_size):
+  def ZeroAttentionState(self, source_length, decoder_batch_size):
     p = self.params
+
+    # [target_batch, num_mixtures]
     position = tf.zeros([decoder_batch_size, p.num_mixtures], dtype=p.dtype)
-    position_offsets = tf.zeros(
-        [decoder_batch_size, p.num_mixtures], dtype=p.dtype)
+    position_offsets = tf.zeros([decoder_batch_size, p.num_mixtures],
+                                dtype=p.dtype)
     variances = tf.ones([decoder_batch_size, p.num_mixtures], dtype=p.dtype)
     priors = tf.zeros([decoder_batch_size, p.num_mixtures], dtype=p.dtype)
-    atten_states = tf.stack(
-        [position, position_offsets, variances, priors], axis=2)
-    return atten_states
+
+    # [target_batch, num_mixtures, 4]
+    return tf.stack([position, position_offsets, variances, priors], axis=2)
 
   def ComputeContextVectorWithSource(self,
                                      theta,
@@ -2562,87 +2733,101 @@ class GmmMonotonicAttention(BaseAttentionLayer):
                                      query_vec,
                                      attention_state,
                                      per_step_source_padding=None,
-                                     step_state=None,
                                      query_segment_id=None):
     """Computes the context vector given the current query output.
 
     Args:
-      theta: A `.NestedMap` object containing weights' values of this
-        layer and its children layers.
+      theta: A `.NestedMap` object containing weights' values of this layer and
+        its children layers.
       packed_src: A `.NestedMap` object returned by PackSource or
         InitForSourcePacked.
-      query_vec: a tensor of shape [batch_size, query_dim].
+      query_vec: a tensor of shape [target_batch, query_dim].
       attention_state: previous attention state, a tensor of shape
-        [batch_size, num_mixtures, 4].
-
+        [target_batch, num_mixtures, 4].
         - attention_state[:, :, 0] contains previous location
         - attention_state[:, :, 1] contains previous offset.
         - attention_state[:, :, 2] contains previous variance.
         - attention_state[:, :, 3] contains previous prior.
-      per_step_source_padding: Source sequence padding to apply at this step.
-        If not None, it should be of shape [target_batch_size,
-        source_seq_length].
-      step_state: A `.NestedMap` containing 'global_step' and 'time_step'.
-        Required for deterministic dropout.
-      query_segment_id: a tensor of shape [batch_size]
-
+      per_step_source_padding: Source sequence padding to apply at this step. If
+        not None, it should be of shape [target_batch, source_length].
+      query_segment_id: a tensor of shape [target_batch].
     Note: concated_source_vecs are the vectors that are used to compute the
-    attention score between the query_vec and each concated_source_vec.
-    The concated_source_contexts are the vectors that compose the result.
-    The attention context vector is computed as a weighted average of the
-    concated_source_contexts, using the scores that were computed using
-    concated_source_vecs.
+      attention score between the query_vec and each concated_source_vec. The
+      concated_source_contexts are the vectors that compose the result. The
+      attention context vector is computed as a weighted average of the
+      concated_source_contexts, using the scores that were computed using
+      concated_source_vecs.
 
     Returns:
       A tuple of 3 elements.
-        The attention context vector:
-          [batch_size, context_dim]
-        The attention probability vector:
-          [batch_size, time]
-        The new attention state vector:
-          possibly nested tuple of tensors with dimensions [target_batch, ...]
+        The attention context vector: [target_batch, context_dim]
+        The attention probability vector: [target_batch, source_length]
+        The new attention state vector: [target_batch, num_mixtures, 4]
     """
     del query_segment_id
     p = self.params
     concated_source_vecs = packed_src.source_vecs
     concated_source_contexts = packed_src.source_contexts
     source_padding = packed_src.source_padding
-    query_batch_size = tf.shape(query_vec)[0]
-    source_seq_length = tf.shape(source_padding)[0]
+
+    target_batch = tf.shape(query_vec)[0]
+    source_length = tf.shape(source_padding)[0]
+    source_batch = tf.shape(source_padding)[1]
+
+    # [target_batch, source_length]
     if per_step_source_padding is None:
-      zero = tf.constant(0.0, dtype=query_vec.dtype)
-      per_step_source_padding = tf.fill([query_batch_size, source_seq_length],
-                                        zero)
-    per_step_source_padding = py_utils.HasShape(
-        per_step_source_padding, [query_batch_size, source_seq_length])
+      per_step_source_padding = tf.zeros([target_batch, source_length],
+                                         dtype=query_vec.dtype)
+    per_step_source_padding = py_utils.HasShape(per_step_source_padding,
+                                                [target_batch, source_length])
+
+    # [target_batch, num_mixtures * 3]
     out = self.GMM.FProp(theta.GMM, query_vec)
+
+    # [target_batch, num_mixtures]
     priors_logits, position_offset_logits, log_variances = tf.split(
         out, 3, axis=1, name='GMM')
+
     log_variances = tf.minimum(log_variances, layers.LOG_SCALE_CLAMP_BOUND)
     variances = tf.exp(log_variances)
+    summary_utils.histogram('gmm_variances', variances)
+
     priors = tf.nn.softmax(priors_logits)
+    summary_utils.histogram('gmm_weights', priors)
+
     if p.max_offset > 0:
       position_offset = tf.nn.sigmoid(position_offset_logits)
       position_offset *= p.max_offset
     else:
       position_offset = tf.exp(position_offset_logits)
+    summary_utils.histogram('gmm_offsets', position_offset)
+
     new_position = attention_state[:, :, 0] + position_offset
-    new_position = tf.minimum(new_position, tf.to_float(source_seq_length))
+    new_position = tf.minimum(new_position, tf.cast(source_length, tf.float32))
     variances = py_utils.AddDebugTensor(variances, name='variances')
     priors = py_utils.AddDebugTensor(priors, name='priors')
-    # Tile and reshape encoder_positions to [batch, 1, timesteps, 1] so that
-    # it can be evaluated by locations GMMs in a vectorized way.
-    source_batch_size = tf.shape(source_padding)[1]
+
+    # Tile and reshape encoder_positions to [source_batch, source_length]
+    # so that it can be evaluated by locations GMMs in a vectorized way.
     encoder_positions = tf.expand_dims(
-        tf.to_float(tf.range(source_seq_length)), 0)
-    encoder_positions = tf.tile(encoder_positions, (source_batch_size, 1))
-    # [batch, timesteps, 1].
-    encoder_positions = tf.expand_dims(encoder_positions, 1)
-    encoder_positions = tf.expand_dims(encoder_positions, 3)
+        tf.cast(tf.range(source_length), tf.float32), 0)
+    encoder_positions = tf.tile(encoder_positions, [source_batch, 1])
+
+    # TODO(oday): Remove this after all experiments had been migrated.
+    if not p.use_atten_v2:
+      # Reshape encoder_positions to [source_batch, 1, source_length, 1] to
+      # maintain backward compatibility.
+      encoder_positions = tf.expand_dims(encoder_positions, 1)
+      encoder_positions = tf.expand_dims(encoder_positions, 3)
+
+    # [target_batch, context_dim], [target_batch, source_length]
     ctx_vec, prob = self._ctx_vec(source_padding, concated_source_vecs,
                                   concated_source_contexts, query_vec, priors,
                                   new_position, variances, encoder_positions,
                                   per_step_source_padding)
+
+    # [target_batch, num_mixtures, 4]
     new_atten_states = tf.stack(
         [new_position, position_offset, variances, priors], axis=2)
+
     return ctx_vec, prob, new_atten_states

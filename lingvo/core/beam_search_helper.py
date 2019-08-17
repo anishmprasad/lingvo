@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,12 +23,11 @@ from __future__ import division
 from __future__ import print_function
 
 import collections
-
-import tensorflow as tf
-
+import lingvo.compat as tf
 from lingvo.core import base_layer
+from lingvo.core import ops
 from lingvo.core import py_utils
-from lingvo.core.ops import py_x_ops
+import six
 
 # TODO(yonghui):
 #   1) Change the tensor shape [max_decoder_time_steps, batch_size *
@@ -81,17 +81,28 @@ class BeamSearchHelper(base_layer.BaseLayer):
 
       def InitBeamSearchState(theta, encoder_outputs, num_hyps_per_beam):
         Args:
-          theta: A NestedMap object containing weights' values of this
-              layer and its children layers.
+          theta: A NestedMap object containing weights' values of this layer and
+            its children layers.
           encoder_outputs: A NestedMap computed by encoder.
           num_hyps_per_beam: An int, number hyps to keep for source sentence.
+
         Returns:
-          initial_results: a `.NestedMap` of initial results. It should contain
-              the following tensors at the minimum.
-                  log_probs: The initial log probs for each of the tokens in
-                      the target vocab, of shape [tgt_batch, vocab_size].
-                  atten_probs: The initial attention probs, of shape [tgt_batch,
-                      src_len].
+          initial_results: a `.NestedMap` of initial results. It must contain
+              the 'atten_probs' and 'log_probs' tensors. Optionally it may
+              contain 'step_ids'.
+              .log_probs: The initial log probs for each of the tokens in
+                  the target vocab, of shape [num_hyps_per_beam * src_batch,
+                  vocab_size]. src_batch "b" and hyp_per_beam "h" is
+                  represented at index (h * src_batch + b).
+              .atten_probs: The initial attention probs, of shape [
+                  num_hyps_per_beam * src_batch, src_len]. src_batch "b"
+                  and hyp_per_beam "h" is represented at index
+                  (h * src_batch + b).
+              .step_ids: Optional. The initial ids of shape [num_hyps_per_beam *
+                  src_batch, 1] for which to start the beam search. src_batch
+                  "b" and hyp_per_beam "h" is represented at index (h *
+                  src_batch + b).  If not specified, we default to a tensor
+                  filled with target_sos_id.
           states: a `.NestedMap` of tensors representing states that the client
               would like to keep track of for each hyp.
 
@@ -106,23 +117,28 @@ class BeamSearchHelper(base_layer.BaseLayer):
                                     in_states,
                                     num_hyps_per_beam):
         Args:
-          theta: A NestedMap object containing weights' values of this
-              layer and its children layers.
+          theta: A NestedMap object containing weights' values of this layer and
+            its children layers.
           encoder_outputs: A NestedMap computed by encoder.
-          step_ids: A tensor of shape [tgt_batch, 1].
+          step_ids: A tensor of shape [num_hyps_per_beam * src_batch, 1].
           in_states: A `.NestedMap` of tensors representing states that the
-              clients would like to keep track of for each of the active hyps.
+            clients would like to keep track of for each of the active hyps.
+
         Returns:
           results: A `.NestedMap` of beam search results. It should contain
               the 'atten_probs' and 'log_probs' tensors at the minimal.
               Optionally it may contain 'is_last_chunk' if it is decoding a
               neural transducer model.
-          atten_probs: The updated attention probs, of shape [tgt_batch,
-              src_len].
-          log_probs: Log prob for each of the tokens in the target vocab. This
-              is of shape [tgt_batch, vocab_size].
-          is_last_chunk: Whether or not each of the hyp is at the end of a
-              chunk. If non-empty, it is of shape [tgt_batch, 1]
+              .atten_probs: The updated attention probs, of shape
+                  [num_hyps_per_beam * src_batch, src_len]. src_batch "b" and
+                  hyp_per_beam "h" is represented at index (h * src_batch + b).
+              .log_probs: Log prob for each of the tokens in the target vocab.
+                  This is of shape [num_hyps_per_beam * src_batch, vocab_size].
+                  src_batch "b" and hyp_per_beam "h" is represented at index
+                  (h * src_batch + b).
+              .is_last_chunk: Whether or not each of the hyp is at the end of a
+                  chunk. If non-empty, it is of shape
+                  [num_hyps_per_beam * src_batch, 1].
           out_states: A `.NestedMap`. The updated states. This 'out_states'
               should be of the exact same structure as 'in_states'
 
@@ -136,11 +152,12 @@ class BeamSearchHelper(base_layer.BaseLayer):
                                      new_step_ids,
                                      other_states):
         Args:
-          theta: A NestedMap object containing weights' values of this
-              layer and its children layers.
+          theta: A NestedMap object containing weights' values of this layer and
+            its children layers.
           encoder_outputs: A NestedMap computed by encoder.
           new_step_ids: Token ids for the next beam search step.
           other_states: A `.NestedMap`.
+
         Returns:
           final_states, A `.NestedMap`.
   """
@@ -209,6 +226,10 @@ class BeamSearchHelper(base_layer.BaseLayer):
         'dimension of the hyp states. Otherwise, timing becomes the major '
         'dimension, and the gathers are performed along the second-to-major '
         'dimension.')
+    p.Define(
+        'local_eos_threshold', -100.0,
+        'During beam search, allow </s> to terminate a hyp if the local score '
+        'for </s> is greater than local_eos_threshold.')
     p.name = 'beam_search'
     return p
 
@@ -228,27 +249,30 @@ class BeamSearchHelper(base_layer.BaseLayer):
       | num_hyps_per_beam = Number of hyps to keep per source sequence.
       | num_hyps = num_beams * num_hyps_per_beam
       | src_seq_len = Number of time steps in the source sequence.
+      | src_batch = Number of examples in the source sequence.
       | tgt_seq_len = Maximum allowed time steps in the target sequence.
+      | tgt_batch = num_hyps_per_beam * src_batch
 
     Args:
       theta: A `.NestedMap` object containing weights' values of the decoder
-          layer and its children layers.
-      encoder_outputs: A `.NestedMap` containing encoder outputs to be passed
-        to the callbacks.
+        layer and its children layers.
+      encoder_outputs: A `.NestedMap` containing encoder outputs to be passed to
+        the callbacks.
       cur_step: A scalar int tensor, the current time step, 0-based.
       step_ids: An int tensor of shape [num_hyps, 1]. The input ids to the
-          current search step.
+        current search step.
       core_bs_states: A tuple of core beam search states. This list is
-          maintained by this helper class.
-      other_states: A `.NestedMap` of other beam search states.
-          This `.NestedMap` is managed and updated by the client. It is
-          expected that each of its member tensors are of rank >= 1. t[i, ...]
-          is the state of the i-th hyp at the beginning of this search step.
+        maintained by this helper class.
+      other_states: A `.NestedMap` of other beam search states. This
+        `.NestedMap` is managed and updated by the client. It is expected that
+        each of its member tensors are of rank >= 1. t[i, ...] is the state of
+        the i-th hyp at the beginning of this search step.
       num_hyps_per_beam: Num of hyps to keep per beam.
       pre_beam_search_step_callback: The `PreBeamSearchStepCallback` callback.
-          See class header comments for more details.
+        See class header comments for more details.
       post_beam_search_step_callback: The `PostBeamSearchStepCallback` callback.
-          See class header comments for more details.
+        See class header comments for more details.
+
     Returns:
       A tuple of following elements for the next beam search step,
       (next step, all_done, step_ids, core_bs_states, other_states)
@@ -263,7 +287,7 @@ class BeamSearchHelper(base_layer.BaseLayer):
 
     (out_best_scores, out_cumulative_scores, out_scores, out_hyps,
      out_prev_hyps, out_done_hyps, out_atten_probs,
-     all_done) = py_x_ops.beam_search_step(
+     all_done) = ops.beam_search_step(
          bs_results.log_probs,
          bs_results.atten_probs,
          best_scores,
@@ -283,7 +307,8 @@ class BeamSearchHelper(base_layer.BaseLayer):
          merge_paths=p.merge_paths,
          allow_empty_terminated_hyp=p.allow_empty_terminated_hyp,
          ensure_full_beam=p.ensure_full_beam,
-         force_eos_in_last_step=p.force_eos_in_last_step)
+         force_eos_in_last_step=p.force_eos_in_last_step,
+         local_eos_threshold=p.local_eos_threshold)
 
     new_step_ids = tf.reshape(out_hyps[cur_step, :], tf.shape(step_ids))
     new_step_ids.set_shape(step_ids.get_shape())
@@ -309,8 +334,9 @@ class BeamSearchHelper(base_layer.BaseLayer):
 
     new_other_states = other_states.Transform(ReOrderHyps)
 
-    final_other_states = post_beam_search_step_callback(
-        theta, encoder_outputs, new_step_ids, new_other_states)
+    final_other_states = post_beam_search_step_callback(theta, encoder_outputs,
+                                                        new_step_ids,
+                                                        new_other_states)
 
     return (cur_step + 1, all_done, new_step_ids, new_bs_states,
             final_other_states)
@@ -326,21 +352,21 @@ class BeamSearchHelper(base_layer.BaseLayer):
     """Performs beam-search based decoding.
 
     Args:
-      theta: A NestedMap object containing weights' values of the decoder
-        layer and its children layers.
-      encoder_outputs: A NestedMap containing encoder outputs to be passed
-        to the callbacks.
+      theta: A NestedMap object containing weights' values of the decoder layer
+        and its children layers.
+      encoder_outputs: A NestedMap containing encoder outputs to be passed to
+        the callbacks.
       num_hyps_per_beam_override: If set to a value <= 0, this parameter is
-        ignored. If set to a value > 0, then this value will be used to
-        override `p.num_hyps_per_beam`.
+        ignored. If set to a value > 0, then this value will be used to override
+        `p.num_hyps_per_beam`.
       init_beam_search_state: The `InitBeamSearchState` callback. Please refer
-          to the class header comments for more details.
+        to the class header comments for more details.
       pre_beam_search_step_callback: The `PreBeamSearchStepCallback` callback.
-          Please refer to the class header comments for more details.
+        Please refer to the class header comments for more details.
       post_beam_search_step_callback: The `PostBeamSearchStepCallback` callback.
-          Please refer to the class header comments for more details.
-      max_steps: maximum beam search steps. If None,
-          use self.params.target_seq_len.
+        Please refer to the class header comments for more details.
+      max_steps: maximum beam search steps. If None, use
+        self.params.target_seq_len.
 
     Returns:
       A `BeamSearchDecodeOutput`.
@@ -358,8 +384,13 @@ class BeamSearchHelper(base_layer.BaseLayer):
     num_hyps = tf.shape(initial_results.log_probs)[0]
     num_beams = num_hyps // num_hyps_per_beam
 
-    step_ids = tf.fill([num_hyps, 1],
-                       tf.constant(p.target_sos_id, dtype=tf.int32))
+    if 'step_ids' in initial_results:
+      # [num_hyps, 1]
+      step_ids = tf.ensure_shape(initial_results.step_ids, [None, 1])
+    else:
+      step_ids = tf.fill([num_hyps, 1],
+                         tf.constant(p.target_sos_id, dtype=tf.int32))
+
     min_score = -1e36
     best_scores = (tf.zeros(shape=[num_beams], dtype=p.dtype) + min_score)
     cumulative_scores = tf.zeros(shape=[num_hyps], dtype=p.dtype)
@@ -418,7 +449,7 @@ class BeamSearchHelper(base_layer.BaseLayer):
           tf.reduce_sum(1.0 - tf.transpose(source_paddings), 1))
 
     # [num_beams, num_hyps_per_beam].
-    topk_hyps = py_x_ops.top_k_terminated_hyps(
+    topk_hyps = ops.top_k_terminated_hyps(
         final_done_hyps,
         source_seq_lengths,
         k=num_hyps_per_beam,
@@ -430,7 +461,7 @@ class BeamSearchHelper(base_layer.BaseLayer):
         merge_paths=p.merge_paths)
     # [num_beams * num_hyps_per_beam, ...].
     max_seq_length = 0 if isinstance(max_steps, tf.Tensor) else max_steps
-    topk_ids, topk_lens, topk_scores = py_x_ops.unpack_hyp(
+    topk_ids, topk_lens, topk_scores = ops.unpack_hyp(
         tf.reshape(topk_hyps, [-1]), max_seq_length=max_seq_length)
     # [num_beams, num_hyps_per_beam].
     topk_scores = tf.reshape(topk_scores, tf.shape(topk_hyps))
@@ -451,7 +482,7 @@ def _GetShapes(tensors, none_shapes=False):
     The same structure as tensors but of corresponding `TensorShape` objects.
   """
   shapes = []
-  for t in tf.contrib.framework.nest.flatten(tensors):
+  for t in tf.nest.flatten(tensors):
     shape = t.get_shape() if isinstance(t, tf.Tensor) else None
     if none_shapes:
       if shape:
@@ -461,8 +492,7 @@ def _GetShapes(tensors, none_shapes=False):
     else:
       shapes.append(tf.TensorShape(shape))
 
-  return type(tensors)(
-      tf.contrib.framework.nest.pack_sequence_as(tensors, shapes))
+  return type(tensors)(tf.nest.pack_sequence_as(tensors, shapes))
 
 
 def MergeBeamSearchOutputs(max_hyps_per_beam, beam_search_outputs):
@@ -486,7 +516,7 @@ def MergeBeamSearchOutputs(max_hyps_per_beam, beam_search_outputs):
                               tf.shape(output.topk_hyps)[0]),
     ],
                                                tf.shape(output.topk_hyps)[1])
-    for k, v in output._asdict().iteritems():
+    for k, v in six.iteritems(output._asdict()):
       if v is None:
         continue
       if k == 'done_hyps':
@@ -497,10 +527,10 @@ def MergeBeamSearchOutputs(max_hyps_per_beam, beam_search_outputs):
 
   # Concatenate the tensors along the 'num_hyps_per_beam' dimension.
   concatenated = {}
-  for k, values in value_dict.iteritems():
+  for k, values in six.iteritems(value_dict):
     if len(values) != len(beam_search_outputs):
-      raise ValueError(
-          'Incomplete values for %s: %s' % (k, beam_search_outputs))
+      raise ValueError('Incomplete values for %s: %s' %
+                       (k, beam_search_outputs))
     concatenated[k] = tf.concat(values, axis=1)
 
   scores = concatenated['topk_scores']
@@ -519,7 +549,7 @@ def MergeBeamSearchOutputs(max_hyps_per_beam, beam_search_outputs):
   # Gather the merged top hyps according to 'gather_indices'.
   top = beam_search_outputs[0]._asdict()
   total_hyps = source_batch * max_hyps_per_beam
-  for k, v in concatenated.iteritems():
+  for k, v in six.iteritems(concatenated):
     v = tf.gather_nd(v, gather_indices)
     if k == 'done_hyps':
       v = tf.transpose(tf.reshape(v, [total_hyps, -1]))

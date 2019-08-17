@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,27 +20,16 @@ from __future__ import division
 from __future__ import print_function
 
 import os
-import pickle
 import time
 import traceback
-import tensorflow as tf
-
-from tensorflow.core.framework import summary_pb2
-from tensorflow.core.protobuf import saver_pb2
 
 from lingvo import base_trial
+import lingvo.compat as tf
 from lingvo.core import cluster_factory
 from lingvo.core import early_stop
 from lingvo.core import py_utils
 
-tf.flags.DEFINE_integer(
-    'enqueue_max_steps', -1, 'Max enqueue steps. -1 meaning no limit.'
-    ' This flag should be set for unit-test only.')
-
-tf.flags.DEFINE_integer('saver_max_to_keep', 100,
-                        'Maximum number of recent checkpoints to keep.')
-
-FLAGS = tf.flags.FLAGS
+from tensorflow.core.framework import summary_pb2
 
 
 class BaseRunner(object):
@@ -55,8 +45,8 @@ class BaseRunner(object):
 
     Args:
       params:  Params object containing model configuration.
-      model_task_name:  String name of the task this runner should execute
-        for multitask models only.  See flag for details.
+      model_task_name:  String name of the task this runner should execute for
+        multitask models only.  See flag for details.
       logdir:  String path to the log directory to output to.
       tf_master:  String path to the master job, e.g. 'local'.
       trial:   An optional hyperparameter trial. Used by Vizier studies.
@@ -135,7 +125,7 @@ class BaseRunner(object):
 
   def _WriteToLog(self, text, logdir, filename):
     """Logs `text` and saves it under `logdir/filename`."""
-    with tf.gfile.FastGFile(os.path.join(logdir, filename), 'w') as f:
+    with tf.gfile.GFile(os.path.join(logdir, filename), 'w') as f:
       f.write(text)
 
     if self._summary_writer is not None:
@@ -146,25 +136,6 @@ class BaseRunner(object):
               tf.Summary.Value(
                   tag=filename, tensor=tf.make_tensor_proto([text]))
           ]))
-
-  def _GetSaver(self):
-    """Returns a saver."""
-    assert tf.get_default_graph() == self._graph
-    if self.params.is_eval and self._model.ema:
-      tf.logging.info('Using EMA for evaluation.')
-      return tf.train.Saver(self._model.ema.variables_to_restore())
-    return tf.train.Saver(
-        sharded=True,
-        max_to_keep=FLAGS.saver_max_to_keep,
-        keep_checkpoint_every_n_hours=0.5,  # one per 30 minutes
-        pad_step_number=True,  # %08d
-        write_version=saver_pb2.SaverDef.V2)
-
-  def _LoadCheckpointForEval(self, sess, checkpoint_path):
-    """Load the checkpoint for evaluation."""
-    tf.logging.info('Load from checkpoint %s.', checkpoint_path)
-    self._saver.restore(sess, checkpoint_path)
-    tf.logging.info('Load checkpoint done.')
 
   @py_utils.Retry(initial_delay_sec=300, max_delay_sec=300)
   def _FindNewCheckpoint(self, prev_path, sess):
@@ -197,13 +168,16 @@ class BaseRunner(object):
       tf.logging.info('%s done.', job_name)
       return
     except py_utils.transient_tf_errors + (tf.errors.OutOfRangeError,
-                                           tf.errors.DataLossError) as e:
+                                           tf.errors.DataLossError,
+                                           tf.errors.InvalidArgumentError) as e:
       # Retry on these three errors.
       #   FailedPreconditionError: variables are not initialized.
       #   AbortedError: processes restarts.
       #   OutOfRangeError: Test/dev datasets are exhausted.
       #   DataLossError: Race condition between evaler and trainer when saving
       #       or removing checkpoints.
+      #   InvalidArgumentError: variables were not initialized. Comes from
+      #       ResourceVariableOp.
       self._SetStatusMessage(
           '%s exception: %s\n' % (job_name, e), retrying=True)
 
@@ -259,12 +233,14 @@ class BaseRunner(object):
       time.sleep(15)
       os._exit(1)  # pylint: disable=protected-access
 
-  def _LoopEnqueue(self, op):
+  def _LoopEnqueue(self, op, session_override=None):
     """Runs the enqueue op in a loop."""
-    with tf.container(self._container_id), self._GetSession() as sess:
+    p = self.params
+    sess = session_override or self._GetSession()
+    with tf.container(self._container_id), sess:
       if self.initialize_tables is not None:
         sess.run(self.initialize_tables)
-      gsteps = self._model.global_step
+      gsteps = py_utils.GetGlobalStep()
       local_enqueue_steps = 0
 
       # Global enqueue steps measures how many global steps have data enqueued
@@ -273,9 +249,9 @@ class BaseRunner(object):
       global_enqueue_steps = None
 
       tf.logging.info('params.train.max_steps: %d, enqueue_max_steps: %d',
-                      self.params.train.max_steps, FLAGS.enqueue_max_steps)
+                      p.train.max_steps, p.train.enqueue_max_steps)
       while True:
-        global_step, = sess.run([gsteps])
+        global_step = sess.run(gsteps)
         if global_enqueue_steps is None:
           global_enqueue_steps = global_step
         if local_enqueue_steps % 1000 == 0:
@@ -285,9 +261,9 @@ class BaseRunner(object):
               local_enqueue_steps, global_step)
 
         if py_utils.use_tpu():
-          global_steps_with_available_data = int(
-              global_enqueue_steps // self.params.train.tpu_steps_per_loop *
-              self.params.train.tpu_steps_per_loop)
+          global_steps_with_available_data = int(global_enqueue_steps //
+                                                 p.train.tpu_steps_per_loop *
+                                                 p.train.tpu_steps_per_loop)
         else:
           global_steps_with_available_data = global_enqueue_steps
 
@@ -295,23 +271,22 @@ class BaseRunner(object):
             self._ShouldStop(sess, global_step)):
           tf.logging.info('Done. ShouldStop is True.')
           return
-        if (FLAGS.enqueue_max_steps > 0 and
-            local_enqueue_steps > FLAGS.enqueue_max_steps):
-          tf.logging.info('Done. FLAGS.enqueue_max_steps reached.')
+        if (p.train.enqueue_max_steps > 0 and
+            local_enqueue_steps >= p.train.enqueue_max_steps):
+          tf.logging.info('Done. train.enqueue_max_steps reached.')
           return
         local_enqueue_steps += 1
 
-        # There are tpu_infeed_parallism parallel threads enqueuing.
+        # There are tpu_infeed_parallelism parallel threads enqueuing.
         # We account for all of them when updating global_enqueue_steps.
-        global_enqueue_steps += self.params.input.tpu_infeed_parallism
+        global_enqueue_steps += p.input.tpu_infeed_parallelism
 
         sess.run([op])
 
   def _GetSession(self, **kwargs):
+    graph = kwargs.pop('graph', self._graph)
     return tf.Session(
-        self._tf_master,
-        graph=self._graph,
-        config=py_utils.SessionConfig(**kwargs))
+        self._tf_master, graph=graph, config=py_utils.SessionConfig(**kwargs))
 
   @classmethod
   def _GetTtlDir(cls, path, duration):
@@ -342,31 +317,28 @@ class BaseRunner(object):
     for name, summary in sorted(summaries.items()):
       if not isinstance(summary, summary_pb2.Summary):
         tf.logging.warning(
-            'Non tf.Summary args passed to _WriteSummaries, skipping: %s @%s',
-            job_name, global_step)
+            'Non tf.Summary args passed to _WriteSummaries, skipping: '
+            'job:%s name:%s @%s', job_name, name, global_step)
         continue
       summary_writer.add_summary(summary, global_step)
-      if summary.value[0].HasField('simple_value'):
-        value = summary.value[0].simple_value
-        tf.logging.info('%s summary on checkpoint@%d %s = %.8g', job_name,
-                        global_step, name, value)
-        status_metrics.append('%s: %.8g' % (name, value))
-        early_stop.MetricHistory.ConditionalAppend(job_name, name, global_step,
-                                                   value)
-      else:
-        tf.logging.info('%s summary on checkpoint@%d %s', job_name, global_step,
-                        name)
+      if summary.value:
+        for value in summary.value:
+          if value.HasField('simple_value'):
+            tf.logging.info('%s summary on checkpoint@%d %s = %.8g', job_name,
+                            global_step, value.tag, value.simple_value)
+            status_metrics.append('%s: %.8g' % (value.tag, value.simple_value))
+            early_stop.MetricHistory.ConditionalAppend(job_name, value.tag,
+                                                       global_step,
+                                                       value.simple_value)
+          else:
+            tf.logging.info('%s summary on checkpoint@%d %s', job_name,
+                            global_step, value.tag)
     summary_writer.flush()
-    self._SetStatusMessage(
-        '%s: step:%6d, %s' % (job_name, global_step, ', '.join(status_metrics)))
+    self._SetStatusMessage('%s: step:%6d, %s' %
+                           (job_name, global_step, ', '.join(status_metrics)))
     if text_filename is not None:
-      with tf.gfile.FastGFile(text_filename, 'w') as f:
+      with tf.gfile.GFile(text_filename, 'w') as f:
         f.write('\n'.join(status_metrics))
-
-  def _WriteKeyValuePairs(self, filename, key_value_pairs):
-    """Writes `key_value_pairs` to `filename`."""
-    with open(filename, 'wb') as f:
-      pickle.dump(key_value_pairs, f, protocol=pickle.HIGHEST_PROTOCOL)
 
   def _ExportMetrics(self, **kwargs):
     """Exports metrics externally."""

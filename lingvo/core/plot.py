@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,14 +23,13 @@ import collections
 import functools
 import traceback
 
+import lingvo.compat as tf
 from matplotlib.backends import backend_agg
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 import numpy as np
 import six
-from six.moves import cStringIO
 from six.moves import range
-import tensorflow as tf
 
 
 def ToUnicode(text):
@@ -138,10 +138,16 @@ class MatplotlibFigureSummary(object):
   Typical usage::
 
       >>> fig_helper = plot.MatplotlibFigureSummary(
-      ...    'summary_name', shared_subplot_kwargs={'xlabel': 'Time'})
+      ...     'summary_name', shared_subplot_kwargs={'xlabel': 'Time'})
       >>> fig_helper.AddSubplot([tensor1], title='tensor1')
       >>> fig_helper.AddSubplot([tensor2], title='tensor2', ylabel='Frequency')
       >>> image_summary = fig_helper.Finalize()
+
+  Can also be used as a context manager if the caller does not need the return
+  value from Finalize(), e.g.
+
+      >>> with plot.MatplotlibFigureSummary('figure') as fig:
+      ...     fig.AddSubplot([tensor1])
   """
 
   def __init__(self,
@@ -179,6 +185,12 @@ class MatplotlibFigureSummary(object):
     self._shared_subplot_kwargs = (
         shared_subplot_kwargs if shared_subplot_kwargs else {})
     self._subplots = []
+
+  def __enter__(self):
+    return self
+
+  def __exit__(self, unused_exc_type, unused_exc_value, unused_tb):
+    self.Finalize()
 
   def AddSubplot(self, tensor_list, plot_func=None, **kwargs):
     r"""Adds a subplot from tensors using plot_fun to populate the subplot axes.
@@ -306,7 +318,7 @@ def _FigureToSummary(name, fig):
   canvas = backend_agg.FigureCanvasAgg(fig)
   fig.canvas.draw()
   ncols, nrows = fig.canvas.get_width_height()
-  png_file = cStringIO()
+  png_file = six.BytesIO()
   canvas.print_figure(png_file)
   png_str = png_file.getvalue()
   return tf.Summary(value=[

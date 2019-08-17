@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,14 +20,14 @@ from __future__ import division
 from __future__ import print_function
 
 import math
-
-import tensorflow as tf
-
-from tensorflow.python.framework import function
+import lingvo.compat as tf
 from lingvo.core import base_layer
 from lingvo.core import early_stop
+from lingvo.core import ops
 from lingvo.core import py_utils
-from lingvo.core.ops import py_x_ops
+from six.moves import zip
+
+from tensorflow.python.framework import function
 
 
 class BaseLearningRateSchedule(base_layer.BaseLayer):
@@ -57,12 +58,23 @@ class BaseLearningRateSchedule(base_layer.BaseLayer):
     return self.FProp(self.theta, current_step)
 
 
-class ConstantOne(BaseLearningRateSchedule):
-  """A lr schedule remains constant 1."""
+class Constant(BaseLearningRateSchedule):
+  """A schedule that always returns a constant value."""
+
+  @classmethod
+  def Params(cls):
+    p = super(Constant, cls).Params()
+    p.Define('value', 1., 'The constant value.')
+    return p
 
   def FProp(self, theta, current_step):
     del theta, current_step
-    return tf.constant(1.0, self.params.dtype)
+    return tf.constant(self.params.value, self.params.dtype)
+
+
+class ConstantOne(Constant):
+  """A lr schedule remains constant 1."""
+  pass
 
 
 class PiecewiseConstantLearningRateSchedule(BaseLearningRateSchedule):
@@ -209,6 +221,27 @@ class ExponentialLearningRateSchedule(BaseLearningRateSchedule):
 
   def FProp(self, theta, current_step):
     return self._exp(tf.cast(current_step, dtype=self.params.dtype))
+
+
+class StepwiseExponentialSchedule(BaseLearningRateSchedule):
+  """Exponential decay every N steps."""
+
+  @classmethod
+  def Params(cls):
+    p = super(StepwiseExponentialSchedule, cls).Params()
+    p.Define('decay', 0.99, 'Decay factor.')
+    p.Define('num_steps_per_decay', 1000, 'Number of steps between decays.')
+    return p
+
+  @base_layer.initializer
+  def __init__(self, params):
+    super(StepwiseExponentialSchedule, self).__init__(params)
+
+  def FProp(self, theta, current_step):
+    p = self.params
+    num_decays = tf.floor(
+        tf.div(tf.cast(current_step, tf.float32), float(p.num_steps_per_decay)))
+    return tf.pow(p.decay, num_decays)
 
 
 class CombinedMinimumLearningRateSchedule(BaseLearningRateSchedule):
@@ -363,7 +396,7 @@ class LinearRampupExponentialDecayScaledByNumSplitSchedule(
       cluster_params.task = 0
       assert cluster_params.mode == 'sync'
       cluster_params.job = 'trainer_client'
-      my_cluster = cluster_params.cls(cluster_params)
+      my_cluster = cluster_params.Instantiate()
       splits = my_cluster.num_splits_per_client
 
     warmup_end = p.warmup * splits
@@ -373,14 +406,19 @@ class LinearRampupExponentialDecayScaledByNumSplitSchedule(
     decay_end = max(decay_start + 1.0, p.decay_end / splits)
     schedules = [
         LinearLearningRateSchedule.Params().Set(
-            start=(0., p.warmup_init), limit=(warmup_end, peak)),
-        LinearLearningRateSchedule.Params().Set(
             start=(warmup_end, peak), limit=(decay_start, peak)),
         ExponentialLearningRateSchedule.Params().Set(
             start=(decay_start, peak), limit=(decay_end, p.min)),
         LinearLearningRateSchedule.Params().Set(
             start=(0, p.max), limit=(decay_end, p.max)),
     ]
+    # Only include a warm up schedule if the warmup_end exceeds 0.0. Note that
+    # linear schedules must have x1 > x0 strictly.
+    if warmup_end > 0.0:
+      schedules = [
+          LinearLearningRateSchedule.Params().Set(
+              start=(0., p.warmup_init), limit=(warmup_end, peak))
+      ] + schedules
     self.CreateChild(
         'combine',
         CombinedMinimumLearningRateSchedule.Params().Set(schedules=schedules))
@@ -427,7 +465,7 @@ class LinearRampupPiecewiseConstantSchedule(BaseLearningRateSchedule):
       cluster_params.task = 0
       assert cluster_params.mode == 'sync'
       cluster_params.job = 'trainer_client'
-      my_cluster = cluster_params.cls(cluster_params)
+      my_cluster = cluster_params.Instantiate()
       splits = my_cluster.num_splits_per_client
 
     assert splits >= 1
@@ -443,6 +481,36 @@ class LinearRampupPiecewiseConstantSchedule(BaseLearningRateSchedule):
             start=(0., 0.), limit=(boundaries[0], lrs[0])),
         PiecewiseConstantLearningRateSchedule.Params().Set(
             boundaries=boundaries, values=[1e8] + lrs)
+    ]
+    self.CreateChild(
+        'combine',
+        CombinedMinimumLearningRateSchedule.Params().Set(schedules=schedules))
+
+  def FProp(self, theta, current_step):
+    return self.combine.Value(current_step)
+
+
+class LinearRampupCosineSchedule(BaseLearningRateSchedule):
+  """A cosine decaying learning rate schedule with a linear rampup phase."""
+
+  @classmethod
+  def Params(cls):
+    p = super(LinearRampupCosineSchedule, cls).Params()
+    p.Define('warmup_init', 0, 'The initial lr value of the warm-up phase.')
+    p.Define('warmup_steps', 0, 'Number of warm up steps.')
+    p.Define('initial_value', 1.0, 'Initial decay value.')
+    p.Define('total_steps', 0, 'Number of steps to reach full decay.')
+    return p
+
+  @base_layer.initializer
+  def __init__(self, params):
+    super(LinearRampupCosineSchedule, self).__init__(params)
+    p = self.params
+    schedules = [
+        LinearLearningRateSchedule.Params().Set(
+            start=(0., p.warmup_init), limit=(p.warmup_steps, p.initial_value)),
+        CosineSchedule.Params().Set(
+            initial_value=p.initial_value, total_steps=p.total_steps),
     ]
     self.CreateChild(
         'combine',
@@ -509,8 +577,8 @@ class DevBasedSchedule(BaseLearningRateSchedule):
           'ref_step', wp, trainable=False)
 
       self._metric_history = early_stop.MetricHistory(p.metric_history)
-      self._best_step = py_x_ops.best_step(self._metric_history.hist_file,
-                                           p.tolerance)
+      self._best_step = ops.best_step(self._metric_history.hist_file,
+                                      p.tolerance)
 
   def FProp(self, theta, current_step):
     p = self.params
@@ -542,23 +610,28 @@ class CosineSchedule(BaseLearningRateSchedule):
   is implemented here.
 
   where:
-    angle = pi * current_step / total_steps
-    value = initial_value * (1 + cosine(angle)) / 2
+    angle = pi * min(1, current_step / total_steps)
+    decay_gap = initial_value - final_value
+    value = final_value + decay_gap * (1 + cosine(angle)) / 2
   """
 
   @classmethod
   def Params(cls):
     p = super(CosineSchedule, cls).Params()
     p.Define('initial_value', 1.0, 'Initial decay value.')
+    p.Define('final_value', 0., 'Final decay value.')
     p.Define('total_steps', 0, 'Number of steps to reach full decay.')
     return p
 
   def FProp(self, theta, current_step):
     p = self.params
     assert p.total_steps > 0
+    assert p.initial_value > p.final_value
     with tf.name_scope(p.name):
-      return 0.5 * p.initial_value * (1 + tf.cos(
-          math.pi * tf.cast(current_step, tf.float32) / p.total_steps))
+      decay_gap = p.initial_value - p.final_value
+      return p.final_value + 0.5 * decay_gap * (1 + tf.cos(math.pi * tf.minimum(
+          1.0,
+          tf.cast(current_step, tf.float32) / p.total_steps)))
 
 
 class PiecewiseSchedule(BaseLearningRateSchedule):

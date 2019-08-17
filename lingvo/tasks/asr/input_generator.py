@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,14 +18,14 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import six
-import tensorflow as tf
-
-from tensorflow.python.ops import inplace_ops
+import lingvo.compat as tf
 from lingvo.core import base_input_generator
 from lingvo.core import base_layer
+from lingvo.core import generic_input
 from lingvo.core import py_utils
-from lingvo.core.ops import py_x_ops
+import six
+
+from tensorflow.python.ops import inplace_ops  # pylint:disable=g-direct-tensorflow-import
 
 
 class AsrInput(base_input_generator.BaseSequenceInputGenerator):
@@ -60,10 +61,12 @@ class AsrInput(base_input_generator.BaseSequenceInputGenerator):
         bucket_key += 1
       tgt_ids, tgt_labels, tgt_paddings = self.StringsToIds(fval['transcript'])
       src_paddings = tf.zeros([tf.shape(fval['frames'])[0]], dtype=tf.float32)
-      return fval['uttid'], tgt_ids, tgt_labels, tgt_paddings, fval[
-          'frames'], src_paddings, bucket_key
+      return [
+          fval['uttid'], tgt_ids, tgt_labels, tgt_paddings, fval['frames'],
+          src_paddings
+      ], bucket_key
 
-    return py_x_ops.generic_input(
+    return generic_input.GenericInput(
         file_pattern=file_pattern,
         processor=Proc,
         dynamic_padding_dimensions=[0] * 6,
@@ -98,7 +101,7 @@ class AsrInput(base_input_generator.BaseSequenceInputGenerator):
     p = self.params
 
     (utt_ids, tgt_ids, tgt_labels, tgt_paddings, src_frames,
-     src_paddings) = self._BuildDataSource()
+     src_paddings), self._bucket_keys = self._BuildDataSource()
 
     self._input_batch_size = tf.shape(utt_ids)[0]
     self._sample_ids = utt_ids
@@ -116,6 +119,36 @@ class AsrInput(base_input_generator.BaseSequenceInputGenerator):
     tgt_labels = tf.squeeze(tgt_labels, axis=1)
     tgt_paddings = tf.squeeze(tgt_paddings, axis=1)
 
+    if p.pad_to_max_seq_length:
+      assert p.source_max_length
+      assert p.target_max_length
+
+      if all(x == p.bucket_batch_limit[0] for x in p.bucket_batch_limit):
+        # Set the input batch size as an int rather than a tensor.
+        self._input_batch_size = self.scaled_bucket_batch_limit[0]
+        src_frames_shape = (self._input_batch_size, p.source_max_length,
+                            p.frame_size, 1)
+        src_paddings_shape = (self._input_batch_size, p.source_max_length)
+        tgt_shape = (self._input_batch_size, p.target_max_length)
+      else:
+        tf.logging.warning(
+            'Could not set static input shape since not all bucket batch sizes '
+            'are the same:', p.bucket_batch_limit)
+        src_frames_shape = None
+        src_paddings_shape = None
+        tgt_shape = None
+
+      src_frames = py_utils.PadSequenceDimension(
+          src_frames, p.source_max_length, 0, shape=src_frames_shape)
+      src_paddings = py_utils.PadSequenceDimension(
+          src_paddings, p.source_max_length, 1, shape=src_paddings_shape)
+      tgt_ids = py_utils.PadSequenceDimension(
+          tgt_ids, p.target_max_length, 0, shape=tgt_shape)
+      tgt_labels = py_utils.PadSequenceDimension(
+          tgt_labels, p.target_max_length, 0, shape=tgt_shape)
+      tgt_paddings = py_utils.PadSequenceDimension(
+          tgt_paddings, p.target_max_length, 1, shape=tgt_shape)
+
     tgt = py_utils.NestedMap(
         ids=tgt_ids,
         labels=tgt_labels,
@@ -128,10 +161,9 @@ class AsrInput(base_input_generator.BaseSequenceInputGenerator):
 
   def InputBatch(self):
     batch = py_utils.NestedMap()
-
+    batch.bucket_keys = self._bucket_keys
     batch.src = self._src
     batch.tgt = self._tgt
     if not py_utils.use_tpu():
       batch.sample_ids = self._sample_ids
-
     return batch

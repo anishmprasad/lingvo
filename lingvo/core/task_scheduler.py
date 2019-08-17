@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,11 +19,10 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import numpy as np
-import tensorflow as tf
-
+import lingvo.compat as tf
 from lingvo.core import base_layer
 from lingvo.core import early_stop
+import numpy as np
 
 
 class TaskScheduler(base_layer.BaseLayer):
@@ -91,7 +91,7 @@ class AdaptiveScheduler(TaskScheduler):
     # TODO(sebjean) Time file reading and change behaviour if too long.
     for index, mh in enumerate(self._metric_histories):
       try:
-        with tf.gfile.FastGFile(mh.hist_file) as f:
+        with tf.gfile.GFile(mh.hist_file) as f:
           lines = f.readlines()
       except tf.errors.NotFoundError:
         tf.logging.warning('File not found. '

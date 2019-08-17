@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,14 +20,15 @@ from __future__ import division
 from __future__ import print_function
 
 import string
-import tensorflow as tf
-
+import lingvo.compat as tf
 from lingvo.core import py_utils
 from lingvo.core import test_helper
+from lingvo.core import test_utils
 from lingvo.tasks.punctuator import input_generator
+from six.moves import range
 
 
-class InputGeneratorTest(tf.test.TestCase):
+class InputGeneratorTest(test_utils.TestCase):
 
   def _CreatePunctuatorInputParams(self):
     p = input_generator.PunctuatorInput.Params()
@@ -64,11 +66,12 @@ class InputGeneratorTest(tf.test.TestCase):
       tgt_ids = fetched.tgt.ids
       tgt_labels = fetched.tgt.labels
 
-      expected_ref = ('His approach was inquisitive , a meeting of artful '
-                      'hesitation with fluid technique .')
+      expected_ref = (b'His approach was inquisitive , a meeting of artful '
+                      b'hesitation with fluid technique .')
 
-      normalized_ref = expected_ref.lower().translate(None, string.punctuation)
-      normalized_ref = ' '.join(normalized_ref.split())
+      normalized_ref = expected_ref.lower().translate(
+          None, string.punctuation.encode('utf-8'))
+      normalized_ref = b' '.join(normalized_ref.split())
       _, expected_src_ids, _ = sess.run(
           tokenizer.StringsToIds(
               tf.convert_to_tensor([normalized_ref]), max_length=max_length))

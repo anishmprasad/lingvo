@@ -1,3 +1,4 @@
+# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,17 +20,11 @@ from __future__ import print_function
 
 import os
 import re
-
-import numpy as np
-import six
-from six.moves import range
-
-import tensorflow as tf
-
+import lingvo.compat as tf
 from lingvo.core import base_layer
 from lingvo.core import cluster_factory
-from lingvo.core import lr_schedule
 from lingvo.core import py_utils
+from lingvo.core import schedule
 from lingvo.core import summary_utils
 from lingvo.core import test_helper
 from lingvo.core import test_utils
@@ -37,6 +32,9 @@ from lingvo.tasks.asr import decoder
 from lingvo.tasks.asr import input_generator
 from lingvo.tasks.asr import model
 from lingvo.tasks.asr import model_test_input_generator as tig
+import numpy as np
+import six
+from six.moves import range
 
 
 class DecoderForTest(decoder.AsrDecoder):
@@ -49,7 +47,7 @@ class DecoderForTest(decoder.AsrDecoder):
     return p
 
 
-class AsrModelTest(tf.test.TestCase):
+class AsrModelTest(test_utils.TestCase):
 
   def _testParams(self):
     input_shape = [2, 16, 8, 3]
@@ -63,47 +61,22 @@ class AsrModelTest(tf.test.TestCase):
     p.name = 'test_mdl'
     return p
 
-
-  def testFPropBPropTargetKey(self, inline=True):
-    # Compute loss for a model without target_key.
-    with self.session(use_gpu=False, graph=tf.Graph()) as sess:
+  def testMakeDecoderTheta(self):
+    # Test that decoder theta returns a copy of theta.decoder without changes.
+    with self.session(use_gpu=False, graph=tf.Graph()):
       tf.set_random_seed(93820985)
       p = self._testParams()
-      mdl = p.cls(p)
+      mdl = p.Instantiate()
       mdl.FPropDefaultTheta()
+      decoder_theta = mdl._MakeDecoderTheta(theta=mdl.theta, input_batch=None)
       mdl.BProp()
-      tf.global_variables_initializer().run()
-      mdl_loss = mdl.loss.eval()
-      sess.run(mdl._train_op)
-      mdl_global_step = mdl.global_step.eval()
-      mdl_train_loss = mdl.loss.eval()
-
-    # Compute loss for a model with target_key.
-    with self.session(use_gpu=False, graph=tf.Graph()) as sess:
-      tf.set_random_seed(93820985)
-      p_t = self._testParams()
-      p_t.input.target_key = 'target_key'
-      p_t.input.target_key_target_shape = [2, 5]
-      p_t.target_key = 'target_key'
-      mdl_t = p.cls(p_t)
-      mdl_t.FPropDefaultTheta()
-      mdl_t.BProp()
-      tf.global_variables_initializer().run()
-      mdl_t_loss = mdl_t.loss.eval()
-      sess.run(mdl_t._train_op)
-      mdl_t_global_step = mdl_t.global_step.eval()
-      mdl_t_train_loss = mdl_t.loss.eval()
-
-    # Verify that losses are identical in either case.
-    self.assertAllClose(mdl_loss, mdl_t_loss)
-    self.assertAllClose(mdl_global_step, mdl_t_global_step)
-    self.assertAllClose(mdl_train_loss, mdl_t_train_loss)
+      self.assertEqual(decoder_theta, mdl.theta.decoder)
 
   def testFProp(self):
     with self.session(use_gpu=False):
       tf.set_random_seed(93820985)
       p = self._testParams()
-      mdl = p.cls(p)
+      mdl = p.Instantiate()
       mdl.FPropDefaultTheta()
       tf.global_variables_initializer().run()
       test_utils.CompareToGoldenSingleFloat(self, 4.472597, mdl.loss.eval())
@@ -156,9 +129,9 @@ class AsrModelTest(tf.test.TestCase):
     with self.session(use_gpu=False) as sess:
       tf.set_random_seed(93820985)
       p = self._testParams()
-      mdl = p.cls(p)
+      mdl = p.Instantiate()
       input_batch = mdl.input_generator.GetPreprocessedInputBatch()
-      dec_out_dict = mdl.Decode(input_batch)
+      dec_out_dict = mdl.DecodeWithTheta(mdl.theta, input_batch)
       tf.global_variables_initializer().run()
       dec_out = sess.run(dec_out_dict)
       print('dec_out', dec_out)
@@ -173,7 +146,7 @@ class AsrModelTest(tf.test.TestCase):
   def testPostProcessDecodeOut(self):
     p = self._testParams()
     p.decoder.beam_search.num_hyps_per_beam = 2
-    mdl = p.cls(p)
+    mdl = p.Instantiate()
     fake_dec_out = {
         'utt_id': ['utt1', 'utt2'],
         'transcripts': ['a b c d', 'a'],
@@ -206,7 +179,7 @@ class AsrModelTest(tf.test.TestCase):
   def testPostProcessDecodeOutFiltersEpsilonTokensForWER(self):
     p = self._testParams()
     p.decoder.beam_search.num_hyps_per_beam = 1
-    mdl = p.cls(p)
+    mdl = p.Instantiate()
     fake_dec_out = {
         'utt_id': ['utt1', 'utt2'],
         'transcripts': ['a b c d', 'a b c'],
@@ -231,7 +204,7 @@ class AsrModelTest(tf.test.TestCase):
   def testPostProcessDecodeOutFiltersNoiseTokensForWER(self):
     p = self._testParams()
     p.decoder.beam_search.num_hyps_per_beam = 1
-    mdl = p.cls(p)
+    mdl = p.Instantiate()
     fake_dec_out = {
         'utt_id': ['utt1', 'utt2'],
         'transcripts': ['a b c d', 'a b c'],
@@ -256,7 +229,7 @@ class AsrModelTest(tf.test.TestCase):
   def testPostProcessDecodeOutHandlesEmptyRef(self):
     p = self._testParams()
     p.decoder.beam_search.num_hyps_per_beam = 1
-    mdl = p.cls(p)
+    mdl = p.Instantiate()
     fake_dec_out = {
         'utt_id': ['utt1', 'utt2'],
         'transcripts': ['', 'a b c d'],
@@ -281,7 +254,7 @@ class AsrModelTest(tf.test.TestCase):
     with self.session(use_gpu=False):
       tf.set_random_seed(93820985)
       p = self._testParams()
-      mdl = p.cls(p)
+      mdl = p.Instantiate()
       mdl.FPropDefaultTheta()
       mdl.BProp()
       tf.global_variables_initializer().run()
@@ -293,9 +266,9 @@ class AsrModelTest(tf.test.TestCase):
       tf.set_random_seed(93820985)
       p = self._testParams()
       p.train.lr_schedule = (
-          lr_schedule.ContinuousLearningRateSchedule.Params().Set(
+          schedule.ContinuousLearningRateSchedule.Params().Set(
               start_step=350000, half_life_steps=45000))
-      mdl = p.cls(p)
+      mdl = p.Instantiate()
       mdl.FPropDefaultTheta()
       mdl.BProp()
       tf.global_variables_initializer().run()
@@ -305,7 +278,7 @@ class AsrModelTest(tf.test.TestCase):
   def testAllLayerParams(self):
     with self.session(use_gpu=False, graph=tf.Graph()):
       p = self._testParams()
-      mdl = p.cls(p)
+      mdl = p.Instantiate()
       mdl.FPropDefaultTheta()
       lps = base_layer.RecursiveFindLayerParams(mdl.params)
       l_names = sorted([p.cls.__name__ for p in lps])
@@ -328,9 +301,12 @@ class AsrModelTest(tf.test.TestCase):
           'NullContextualizer',
           'NullFusion',
           'NullLm',
+          'Learner',
           'PiecewiseConstantLearningRateSchedule',
           'ProjectionLayer',
           'SimpleFullSoftmax',
+          'SpectrumAugmenter',
+          'StackingOverTime',
           'TestInputGenerator',
       ])
       self.assertEqual(expected_layers, l_names)
@@ -338,7 +314,7 @@ class AsrModelTest(tf.test.TestCase):
   def testParamValueSumSquared(self):
     with self.session(use_gpu=False, graph=tf.Graph()):
       p = self._testParams()
-      mdl = p.cls(p)
+      mdl = p.Instantiate()
       mdl.FPropDefaultTheta()
       all_vars = tf.trainable_variables()
       py_utils.SumSquared(all_vars)
@@ -346,7 +322,7 @@ class AsrModelTest(tf.test.TestCase):
   def testCollectVarHistogram(self):
     with self.session(use_gpu=False, graph=tf.Graph()):
       p = self._testParams()
-      mdl = p.cls(p)
+      mdl = p.Instantiate()
       mdl.FPropDefaultTheta()
       var_grads = py_utils.ComputeGradients(mdl.loss, mdl.vars)
       summary_utils.CollectVarHistogram(var_grads)
@@ -354,7 +330,7 @@ class AsrModelTest(tf.test.TestCase):
   def testGradientMult(self):
     with self.session(use_gpu=False, graph=tf.Graph()):
       p = self._testParams()
-      mdl = p.cls(p)
+      mdl = p.Instantiate()
       mdl.FPropDefaultTheta()
       var_grads = py_utils.ComputeGradients(mdl.loss, mdl.vars)
       py_utils.ApplyGradMultiplier(var_grads, -1.1)
@@ -365,7 +341,7 @@ class AsrModelTest(tf.test.TestCase):
       tp = p.train
       tp.lr_schedule.boundaries = [300000, 400000, 500000]
       tp.lr_schedule.values = [1.0, 0.1, 0.01, 0.001]
-      lrs = tp.lr_schedule.cls(tp.lr_schedule)
+      lrs = tp.lr_schedule.Instantiate()
       steps = [299999, 300001, 399999, 400001, 499999, 500001]
       fetches = [lrs.Value(_) for _ in steps]
       values = sess.run(fetches)
@@ -383,7 +359,7 @@ class AsrModelTest(tf.test.TestCase):
             b * 2 / num_splits for b in p.input.bucket_batch_limit
         ]
         with cluster_factory.ForTestingWorker(gpus=num_splits):
-          mdl = p.cls(p)
+          mdl = p.Instantiate()
           metrics = mdl.FPropDefaultTheta()[0]
         tf.global_variables_initializer().run()
         return sess.run(metrics['loss'])
@@ -425,7 +401,7 @@ class AsrModelTest(tf.test.TestCase):
 
     with self.session(use_gpu=False, graph=tf.Graph()) as sess:
       p = _CreateModelParamsForTest()
-      mdl = p.cls(p)
+      mdl = p.Instantiate()
       subgraphs = mdl.Inference()
       self.assertTrue('default' in subgraphs)
 
@@ -436,7 +412,7 @@ class AsrModelTest(tf.test.TestCase):
 
       with open(
           test_helper.test_src_dir_path('tools/testdata/gan_or_vae.16k.wav'),
-          'r') as f:
+          'rb') as f:
         wav = f.read()
       sess.run(tf.global_variables_initializer())
       fetches = sess.run(fetches, {feeds['wav']: wav})

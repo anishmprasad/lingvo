@@ -18,16 +18,17 @@ py_library(
     srcs = [
         ":param_files",
     ],
+    srcs_version = "PY2AND3",
     deps = [
         "//lingvo:model_registry",
         "//lingvo/core:attention",
         "//lingvo/core:base_model_params",
         "//lingvo/core:layers",
-        "//lingvo/core:lr_schedule",
         "//lingvo/core:optimizer",
         "//lingvo/core:py_utils",
         "//lingvo/core:rnn_cell",
         "//lingvo/core:rnn_layers",
+        "//lingvo/core:schedule",
         "//lingvo/tasks/mt:decoder",
         "//lingvo/tasks/mt:encoder",
         "//lingvo/tasks/mt:input_generator",

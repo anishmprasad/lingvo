@@ -21,11 +21,12 @@ py_library(
         ":param_files",
     ],
     data = ["//lingvo/tasks/asr:wpm_files"],
+    srcs_version = "PY2AND3",
     deps = [
         "//lingvo:model_registry",
         "//lingvo/core:base_model_params",
-        "//lingvo/core:lr_schedule",
         "//lingvo/core:py_utils",
+        "//lingvo/core:schedule",
         "//lingvo/core:tokenizers",
         "//lingvo/tasks/asr:input_generator",
         "//lingvo/tasks/asr:model",
